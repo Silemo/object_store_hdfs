@@ -1,3 +1,18 @@
+use std::fmt::{Display, Formatter};
+use std::ops::Range;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::{stream::BoxStream, StreamExt};
+
+use hdfs::hdfs::{get_hdfs_by_full_path, HdfsErr, HdfsFile, HdfsFs};
+use object_store::{
+    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, ObjectMeta,
+    ObjectStore, PutOptions, PutResult, PutPayload, PutMode, Result, maybe_spawn_blocking,
+};
+
 #[derive(Debug)]
 pub struct HadoopFileSystem {
     hdfs: Arc<HdfsFs>,
@@ -37,11 +52,11 @@ impl HadoopFileSystem {
 impl ObjectStore for HadoopFileSystem {
     async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
         if matches!(opts.mode, PutMode::Update(_)) {
-            return Err(crate::Error::NotImplemented);
+            return Err(Error::NotImplemented);
         }
 
         if !opts.attributes.is_empty() {
-            return Err(crate::Error::NotImplemented);
+            return Err(Error::NotImplemented);
         }
 
         let hdfs = self.hdfs.clone();
