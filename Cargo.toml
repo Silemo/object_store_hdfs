@@ -1,0 +1,31 @@
+[package]
+name = "objectstore-hdfs"
+version = "0.1.0"
+edition = "2024"
+
+description = "A object_store implementation for HDFS. It uses fs-hdfs which is a libhdfs Rust wrapper"
+authors = ["Giovanni Manfredi <giovanni@manfredi.ai>"]
+licence = "Apache-2.0"
+readme = "README.md"
+keywords = [
+    "hadoop".
+    "hdfs",
+    "hdfs3",
+    "object_store",
+    "store",
+]
+repository = https://github.com/Silemo/objectstore-hdfs
+
+[dependencies]
+# "stdlib"
+bytes = { version = "1" }
+chrono = { version = ">0.4.34", default-features = false, features = ["clock"] }
+
+# runtime / async
+async-trait = { version = "0.1" }
+futures = { version = "0.3" }
+tokio = { version = "1.18", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
+
+# object store and hdfs dependencies
+object_store = "0.9.0"
+fs-hdfs = { version = "0.1.12"}
