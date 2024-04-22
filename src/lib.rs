@@ -1,3 +1,4 @@
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -5,12 +6,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures::{stream::BoxStream, StreamExt};
 
-use hdfs::hdfs::{get_hdfs_by_full_path, HdfsErr, HdfsFile, HdfsFs};
+use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
+use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
-    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, ObjectMeta,
-    ObjectStore, PutOptions, PutResult, PutPayload, PutMode, Result, maybe_spawn_blocking,
+    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, ObjectMeta, MultipartId,
+    ObjectStore, PutOptions, PutResult, payload::PutPayload, PutMode, Result,
+    util::maybe_spawn_blocking, upload::MultipartUpload,
 };
 
 #[derive(Debug)]
@@ -19,7 +23,7 @@ pub struct HadoopFileSystem {
 }
 
 impl std::fmt::Display for HadoopFileSystem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HadoopFileSystem({})", self.get_path_root())
     }
 }
@@ -198,7 +202,7 @@ impl ObjectStore for HadoopFileSystem {
             // Convert Metadata
             let object_metadata = convert_metadata(file_status, &hdfs_root);
 
-            Ok((buf, object_meta, range))
+            Ok((buf, object_metadata, range))
         })
         .await?;
 
@@ -518,7 +522,7 @@ fn convert_walkdir_result(
         Ok(entry) => Ok(Some(entry)),
         Err(walkdir_err) => match walkdir_err {
             HdfsErr::FileNotFound(_) => Ok(None),
-            _ => Err(to_error(HdfsErr::Generic(
+            _ => Err(match_error(HdfsErr::Generic(
                 "Fail to walk hdfs directory".to_owned(),
             ))),
         },
