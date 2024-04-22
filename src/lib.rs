@@ -50,6 +50,7 @@ impl HadoopFileSystem {
 
 #[async_trait]
 impl ObjectStore for HadoopFileSystem {
+    /// Save the provided `payload` to `location` with the given options
     async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
         if matches!(opts.mode, PutMode::Update(_)) {
             return Err(Error::NotImplemented);
@@ -62,8 +63,7 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         let path = String::from(location);
         maybe_spawn_blocking(move || {
-            //let mut e_tag = None;
-
+            // Note that here the return is made explicit for clarity but removing the ; it can be removed
             let file = match opts.mode {
                 PutMode::Overwrite => {
                     return match hdfs.create_with_overwrite(&path, true) {
@@ -71,13 +71,14 @@ impl ObjectStore for HadoopFileSystem {
                         Err(e) => Err(match_to_local_error(e)),
                     };
                 }
-                PutMode::Create => 
+                PutMode::Create => {
                     return match hdfs.create(&path) {
                         Ok(f) => f,
                         Err(e) => Err(match_to_local_error(e)),
                     };
+                }
                 PutMode::Update(_) => unreachable!(),
-            }
+            };
 
             file.write(payload.as_ref()).map_err(match_to_local_error)?;
             file.close().map_err(match_to_local_error);
@@ -90,9 +91,26 @@ impl ObjectStore for HadoopFileSystem {
         .await
     }
 
-    async fn put_multipart_opts(&self, location: &Path, opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
-        
+    /// Perform a multipart upload
+    ///
+    /// Client should prefer [`ObjectStore::put`] for small payloads, as streaming uploads
+    /// typically require multiple separate requests. See [`MultipartUpload`] for more information
+    async fn put_multipart(&self, location: &Path) -> Result<Box<dyn MultipartUpload>> {
+        //self.put_multipart_opts(location, PutMultipartOpts::default())
+        //    .await
     }
+
+    /// Cleanup an aborted upload.
+    ///
+    /// See documentation for individual stores for exact behavior, as capabilities
+    /// vary by object store.
+    async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> Result<()> {
+
+    }
+
+    //async fn put_multipart_opts(&self, location: &Path, opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
+    //    
+    //}
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         
@@ -106,6 +124,10 @@ impl ObjectStore for HadoopFileSystem {
         
     }
 
+    async fn head(&self, location: &Path) -> Result<ObjectMeta> {
+
+    }
+
     async fn delete(&self, location: &Path) -> Result<()> {
         
     }
@@ -117,7 +139,6 @@ impl ObjectStore for HadoopFileSystem {
     fn list_with_offset(&self, prefix: Option<&Path>, offset: &Path) -> BoxStream<'_, Result<ObjectMeta>> {
 
     }
-
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
         
@@ -133,10 +154,6 @@ impl ObjectStore for HadoopFileSystem {
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
         
-    }
-
-    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
-
     }
 }
 
