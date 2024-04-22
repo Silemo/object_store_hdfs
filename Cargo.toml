@@ -1,11 +1,11 @@
 [package]
 name = "objectstore-hdfs"
 version = "0.1.0"
-
-description = "A object_store implementation for HDFS. It uses fs-hdfs which is a libhdfs Rust wrapper"
+edition = "2021"
+license = "Apache-2.0"
 authors = ["Giovanni Manfredi <giovanni@manfredi.ai>"]
-licence = "Apache-2.0"
 readme = "README.md"
+description = "A object_store implementation for HDFS. It uses fs-hdfs which is a libhdfs Rust wrapper"
 keywords = [
     "hadoop",
     "hdfs",
@@ -14,6 +14,7 @@ keywords = [
     "store",
 ]
 repository = "https://github.com/Silemo/objectstore-hdfs"
+rust-version = "1.62.1"
 
 [dependencies]
 # "stdlib"
@@ -26,5 +27,5 @@ futures = { version = "0.3" }
 tokio = { version = "1.18", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
 
 # object store and hdfs dependencies
-object_store = "0.9.0"
+object_store = "0.9"
 fs-hdfs = { version = "0.1.12"}
