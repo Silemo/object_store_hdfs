@@ -13,7 +13,7 @@ keywords = [
     "object_store",
     "store",
 ]
-repository = "https://github.com/Silemo/objectstore-hdfs"
+repository = "https://github.com/Silemo/object_store_hdfs"
 rust-version = "1.62.1"
 
 [dependencies]
