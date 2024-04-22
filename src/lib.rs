@@ -45,7 +45,7 @@ impl HadoopFileSystem {
 
     /// Create new HadoopFileSystem by getting HdfsFs from the full path, 
     /// e.g. full_path == hdfs://localhost:8020/xxx/xxx
-    pub fn new(full_path: &str) -> Option<Self> {
+    pub fn new_from_full_path(full_path: &str) -> Option<Self> {
         get_hdfs_by_full_path(full_path)
             .map(|hdfs| Some(Self { hdfs }))
             .unwrap_or(None)
