@@ -12,9 +12,10 @@ use futures::{stream::BoxStream, StreamExt};
 use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
 use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
-    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, ObjectMeta, MultipartId,
-    ObjectStore, PutOptions, PutResult, payload::PutPayload, PutMode, Result,
-    util::maybe_spawn_blocking, upload::MultipartUpload,
+    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, 
+    ObjectMeta, MultipartId, ObjectStore, PutOptions, PutResult, 
+    payload::PutPayload, PutMode, Result, util::{self, maybe_spawn_blocking}, 
+    upload::{self, MultipartUpload},
 };
 
 #[derive(Debug)]
