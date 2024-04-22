@@ -14,8 +14,10 @@ use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, 
     ObjectMeta, MultipartId, ObjectStore, PutOptions, PutResult, 
-    payload::PutPayload, PutMode, Result, util::{self, maybe_spawn_blocking}, 
-    upload::{self, MultipartUpload},
+    //payload::PutPayload, 
+    PutMode, Result, 
+    //util::{self, maybe_spawn_blocking}, 
+    //upload::MultipartUpload,
 };
 
 #[derive(Debug)]
@@ -89,8 +91,8 @@ impl HadoopFileSystem {
 
 #[async_trait]
 impl ObjectStore for HadoopFileSystem {
-    /// Save the provided `payload` to `location` with the given options
-    async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
+    /// Save the provided `payload` to `location` with the given options (TODO: here payload: PutPayload)
+    async fn put_opts(&self, location: &Path, payload: Arc<[Bytes]>, opts: PutOptions) -> Result<PutResult> {
         if matches!(opts.mode, PutMode::Update(_)) {
             return Err(Error::NotImplemented);
         }
@@ -135,7 +137,8 @@ impl ObjectStore for HadoopFileSystem {
     ///
     /// Client should prefer [`ObjectStore::put`] for small payloads, as streaming uploads
     /// typically require multiple separate requests. See [`MultipartUpload`] for more information
-    async fn put_multipart(&self, location: &Path) -> Result<Box<dyn MultipartUpload>> {
+    // TODO here -> Result<Box<dyn MultipartUpload>>
+    async fn put_multipart(&self, location: &Path) -> Result<Box<dyn AsyncWrite + Unpin + Send>> {
         // VERSION 0.10
         //self.put_multipart_opts(location, PutMultipartOpts::default())
         //    .await
@@ -528,4 +531,20 @@ fn convert_walkdir_result(
             ))),
         },
     }
+}
+
+/// Takes a function and spawns it to a tokio blocking pool if available
+pub async fn maybe_spawn_blocking<F, T>(f: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    //#[cfg(feature = "try_spawn_blocking")]
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime.spawn_blocking(f).await?,
+        Err(_) => f(),
+    }
+
+    //#[cfg(not(feature = "try_spawn_blocking"))]
+    //f()
 }
