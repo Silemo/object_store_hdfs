@@ -20,6 +20,9 @@ use object_store::{
     //upload::MultipartUpload,
 };
 
+// TODO: Remove this
+use tokio::io::AsyncWrite;
+
 #[derive(Debug)]
 pub struct HadoopFileSystem {
     hdfs: Arc<HdfsFs>,
