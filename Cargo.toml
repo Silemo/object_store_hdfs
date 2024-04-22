@@ -1,20 +1,19 @@
 [package]
 name = "objectstore-hdfs"
 version = "0.1.0"
-edition = "2024"
 
 description = "A object_store implementation for HDFS. It uses fs-hdfs which is a libhdfs Rust wrapper"
 authors = ["Giovanni Manfredi <giovanni@manfredi.ai>"]
 licence = "Apache-2.0"
 readme = "README.md"
 keywords = [
-    "hadoop".
+    "hadoop",
     "hdfs",
     "hdfs3",
     "object_store",
     "store",
 ]
-repository = https://github.com/Silemo/objectstore-hdfs
+repository = "https://github.com/Silemo/objectstore-hdfs"
 
 [dependencies]
 # "stdlib"
