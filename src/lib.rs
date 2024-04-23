@@ -114,14 +114,14 @@ impl ObjectStore for HadoopFileSystem {
                 let (file, err) = match opts.mode {
                     PutMode::Overwrite => {
                         match hdfs.create_with_overwrite(&location, true) {
-                            Ok(f) => (f, None),
-                            Err(e) => (None, e),
+                            Ok(f) => (Some(f), None),
+                            Err(e) => (None, Some(e)),
                         }
                     }
                     PutMode::Create => {
                         match hdfs.create(&location) {
-                            Ok(f) => (f, None),
-                            Err(e) => (None, e),
+                            Ok(f) => (Some(f), None),
+                            Err(e) => (None, Some(e)),
                         }
                     }
                     PutMode::Update(_) => unreachable!(),
@@ -130,7 +130,8 @@ impl ObjectStore for HadoopFileSystem {
                 if err != None {
                     return Err(match_error(err));
                 }
-                
+
+                let file = file.unwrap();
                 file.write(bytes.as_ref()).map_err(match_error)?;
                 file.close().map_err(match_error);
                 Ok(())
