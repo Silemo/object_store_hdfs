@@ -14,7 +14,7 @@ use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, 
     ListResult, ObjectMeta, MultipartId, ObjectStore, PutOptions, 
-    PutResult, PutMode, Result, Attributes,
+    PutResult, PutMode, Result, Attributes, PutMultipartOpts,
     // TODO: comment next line for Version 0.9
     MultipartUpload, PutPayload,
     //util::{self, maybe_spawn_blocking}, 
@@ -106,7 +106,7 @@ impl ObjectStore for HadoopFileSystem {
 
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
-        let location = String::from(location);
+        let location = String::from(*location);
         maybe_spawn_blocking(move || {
             // Note that here the return is made explicit for clarity but removing the ; it can be removed
             let file = match opts.mode {
@@ -177,7 +177,7 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
         // The following variable will shadow location: &Path
-        let location = String::from(location);
+        let location = String::from(*location);
 
         let (blob, object_metadata, range) = maybe_spawn_blocking(move || {
             let file = hdfs.open(&location).map_err(match_error)?;
@@ -228,7 +228,7 @@ impl ObjectStore for HadoopFileSystem {
     async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
-        let location = String::from(location);
+        let location = String::from(*location);
 
         maybe_spawn_blocking(move || {
             let file = hdfs.open(&location).map_err(match_error)?;
@@ -245,7 +245,7 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
         // The following variable will shadow location: &Path
-        let location = String::from(location);
+        let location = String::from(*location);
 
         maybe_spawn_blocking(move || {
             let file_status = hdfs.get_file_status(&location).map_err(match_error)?;
@@ -258,7 +258,7 @@ impl ObjectStore for HadoopFileSystem {
     async fn delete(&self, location: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
-        let location = String::from(location);
+        let location = String::from(*location);
 
         maybe_spawn_blocking(move || {
             hdfs.delete(&location, false).map_err(match_error)?;
@@ -276,7 +276,7 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
         let walkdir =
-            HdfsWalkDir::new_with_hdfs(String::from(prefix), hdfs)
+            HdfsWalkDir::new_with_hdfs(String::from(*prefix), hdfs)
                 .min_depth(1);
 
         let s =
@@ -332,7 +332,7 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
         let walkdir =
-            HdfsWalkDir::new_with_hdfs(String::from(prefix), hdfs)
+            HdfsWalkDir::new_with_hdfs(String::from(*prefix), hdfs)
                 .min_depth(1)
                 .max_depth(1);
 
@@ -379,8 +379,8 @@ impl ObjectStore for HadoopFileSystem {
     async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following two variables will shadow from: &Path and to: &Path
-        let from = String::from(from);
-        let to = String::from(to);
+        let from = String::from(*from);
+        let to = String::from(*to);
 
         maybe_spawn_blocking(move || {
             // We need to make sure the source exist
@@ -407,8 +407,8 @@ impl ObjectStore for HadoopFileSystem {
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following two variables will shadow the from and to &Path
-        let from = String::from(from);
-        let to = String::from(to);
+        let from = String::from(*from);
+        let to = String::from(*to);
 
         maybe_spawn_blocking(move || {
             hdfs.rename(&from, &to).map_err(match_error)?;
@@ -425,8 +425,8 @@ impl ObjectStore for HadoopFileSystem {
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following two variables will shadow the from and to &Path
-        let from = String::from(from);
-        let to = String::from(to);
+        let from = String::from(*from);
+        let to = String::from(*to);
 
         maybe_spawn_blocking(move || {
             if hdfs.exist(&to) {
