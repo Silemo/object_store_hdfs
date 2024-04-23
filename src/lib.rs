@@ -202,7 +202,7 @@ impl ObjectStore for HadoopFileSystem {
 
             // Set range
             let range = match options.range.unwrap() {
-                GetOptions::Buffered(buf) => buf,
+                GetRange::Bounded(range) => range,
                 _ => Range {
                     start: 0,
                     end: file_status.len(),
