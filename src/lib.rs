@@ -13,8 +13,8 @@ use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
 use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, 
-    ListResult, ObjectMeta, MultipartId, ObjectStore, PutOptions, 
-    PutResult, PutMode, Result, Attributes, PutMultipartOpts,
+    ListResult, ObjectMeta, ObjectStore, PutOptions, PutResult,
+    PutMode, Result, Attributes, PutMultipartOpts,
     // TODO: comment next line for Version 0.9
     MultipartUpload, PutPayload,
     //util::{self, maybe_spawn_blocking}, 
@@ -108,19 +108,19 @@ impl ObjectStore for HadoopFileSystem {
         // The following variable will shadow location: &Path
         let location = String::from(*location);
         maybe_spawn_blocking(move || {
-            // Note that here the return is made explicit for clarity but removing the ; it can be removed
+            // Note that the variable file either becomes a HdfsFile f, or an error
             let file = match opts.mode {
                 PutMode::Overwrite => {
-                    return match hdfs.create_with_overwrite(&location, true) {
+                    match hdfs.create_with_overwrite(&location, true) {
                         Ok(f) => f,
                         Err(e) => Err(match_error(e)),
-                    };
+                    }
                 }
                 PutMode::Create => {
-                    return match hdfs.create(&location) {
+                    match hdfs.create(&location) {
                         Ok(f) => f,
                         Err(e) => Err(match_error(e)),
-                    };
+                    }
                 }
                 PutMode::Update(_) => unreachable!(),
             };
