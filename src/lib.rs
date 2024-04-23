@@ -12,13 +12,15 @@ use futures::{stream::BoxStream, StreamExt};
 use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
 use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
-    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, 
-    ObjectMeta, MultipartId, ObjectStore, PutOptions, PutResult, PutPayload, 
-    PutMode, Result, MultipartUpload,
+    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, 
+    ListResult, ObjectMeta, MultipartId, ObjectStore, PutOptions, 
+    PutResult, PutMode, Result, Attributes,
+    // TODO: comment next line for Version 0.9
+    MultipartUpload, PutPayload,
     //util::{self, maybe_spawn_blocking}, 
 };
 
-// TODO: Remove this
+// TODO: Version 0.9
 // use tokio::io::AsyncWrite;
 
 #[derive(Debug)]
@@ -134,36 +136,34 @@ impl ObjectStore for HadoopFileSystem {
         .await
     }
 
+    /// TODO: Version 0.9
     /// Perform a multipart upload
     ///
     /// Client should prefer [`ObjectStore::put`] for small payloads, as streaming uploads
     /// typically require multiple separate requests. See [`MultipartUpload`] for more information
     // TODO here -> Result<Box<dyn MultipartUpload>>
-    async fn put_multipart(&self, location: &Path) -> Result<Box<dyn MultipartUpload>> {
-        // VERSION 0.10
-        //self.put_multipart_opts(location, PutMultipartOpts::default())
-        //    .await
+    //async fn put_multipart(&self, location: &Path) -> Result<Box<dyn MultipartUpload>> {  
+        //todo!()
+    //}
 
-        todo!()
-    }
-
+    /// TODO: Version 0.9
     /// Cleanup an aborted upload.
     ///
     /// See documentation for individual stores for exact behavior, as capabilities
     /// vary by object store.
-    async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> Result<()> {
-
-        todo!()
-    }
+    //async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> Result<()> {
+    //    todo!()
+    //}
     
     // VERSION 0.10
     /// Perform a multipart upload with options
     ///
     /// Client should prefer [`ObjectStore::put`] for small payloads, as streaming uploads
     /// typically require multiple separate requests. See [`MultipartUpload`] for more information
-    //async fn put_multipart_opts(&self, location: &Path, opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
-    //  todo!()
-    //}
+    async fn put_multipart_opts(&self, location: &Path, opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
+        
+        todo!()
+    }
 
     /// Perform a get request with options
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
@@ -217,6 +217,7 @@ impl ObjectStore for HadoopFileSystem {
             ),
             meta: object_metadata,
             range,
+            attributes: Attributes::default(),
         })
     }
 

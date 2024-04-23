@@ -27,5 +27,5 @@ futures = { version = "0.3" }
 tokio = { version = "1.18", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
 
 # object store and hdfs dependencies
-object_store = "0.9"
+object_store = "0.10"
 fs-hdfs3 = { version = "0.1.12", git = "https://github.com/Silemo/fs-hdfs"}
