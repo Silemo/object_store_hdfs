@@ -14,7 +14,7 @@ use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, 
     ListResult, ObjectMeta, ObjectStore, PutOptions, PutResult,
-    PutMode, Result, Attributes, PutMultipartOpts,
+    PutMode, Result, Attributes, PutMultipartOpts, GetRange,
     // TODO: comment next line for Version 0.9
     MultipartUpload, PutPayload,
     //util::{self, maybe_spawn_blocking}, 
@@ -192,19 +192,21 @@ impl ObjectStore for HadoopFileSystem {
             let file = hdfs.open(&location).map_err(match_error)?;
             let file_status = file.get_file_status().map_err(match_error)?;
 
+            // Convert Metadata
+            let object_metadata = convert_metadata(file_status, &hdfs_root);
+
             // Check Modified
             if options.if_unmodified_since.is_some() || options.if_modified_since.is_some() {
                 check_modified(&options, &location, last_modified(&file_status))?;
             }
 
-            // Set GetRange
-            let range = if let Some(range) = options.range {
-                range
-            } else {
-                object_store::GetRange::Bounded(Range {
+            // Set range
+            let range = match options.range.unwrap() {
+                GetOptions::Buffered(buf) => buf,
+                _ => Range {
                     start: 0,
                     end: file_status.len(),
-                })
+                }
             };
 
             // Read Buffer
@@ -213,8 +215,7 @@ impl ObjectStore for HadoopFileSystem {
             // Close file
             file.close().map_err(match_error)?;
 
-            // Convert Metadata
-            let object_metadata = convert_metadata(file_status, &hdfs_root);
+            
 
             Ok((buf, object_metadata, range))
         })
