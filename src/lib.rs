@@ -127,8 +127,8 @@ impl ObjectStore for HadoopFileSystem {
                     PutMode::Update(_) => unreachable!(),
                 };
 
-                if err != None {
-                    return Err(match_error(err));
+                if err.is_some() {
+                    return Err(match_error(err.expect("Hdfs Error Reason")));
                 }
 
                 let file = file.unwrap();
