@@ -13,15 +13,13 @@ use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
 use hdfs::walkdir::HdfsWalkDir;
 use object_store::{
     path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, ListResult, 
-    ObjectMeta, MultipartId, ObjectStore, PutOptions, PutResult, 
-    //payload::PutPayload, 
-    PutMode, Result, 
+    ObjectMeta, MultipartId, ObjectStore, PutOptions, PutResult, PutPayload, 
+    PutMode, Result, MultipartUpload,
     //util::{self, maybe_spawn_blocking}, 
-    //upload::MultipartUpload,
 };
 
 // TODO: Remove this
-use tokio::io::AsyncWrite;
+// use tokio::io::AsyncWrite;
 
 #[derive(Debug)]
 pub struct HadoopFileSystem {
@@ -95,7 +93,7 @@ impl HadoopFileSystem {
 #[async_trait]
 impl ObjectStore for HadoopFileSystem {
     /// Save the provided `payload` to `location` with the given options (TODO: here payload: PutPayload)
-    async fn put_opts(&self, location: &Path, payload: Arc<[Bytes]>, opts: PutOptions) -> Result<PutResult> {
+    async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
         if matches!(opts.mode, PutMode::Update(_)) {
             return Err(Error::NotImplemented);
         }
@@ -141,7 +139,7 @@ impl ObjectStore for HadoopFileSystem {
     /// Client should prefer [`ObjectStore::put`] for small payloads, as streaming uploads
     /// typically require multiple separate requests. See [`MultipartUpload`] for more information
     // TODO here -> Result<Box<dyn MultipartUpload>>
-    async fn put_multipart(&self, location: &Path) -> Result<Box<dyn AsyncWrite + Unpin + Send>> {
+    async fn put_multipart(&self, location: &Path) -> Result<Box<dyn MultipartUpload>> {
         // VERSION 0.10
         //self.put_multipart_opts(location, PutMultipartOpts::default())
         //    .await
