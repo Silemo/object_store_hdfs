@@ -113,13 +113,13 @@ impl ObjectStore for HadoopFileSystem {
                 PutMode::Overwrite => {
                     match hdfs.create_with_overwrite(&location, true) {
                         Ok(f) => f,
-                        Err(e) => Err(match_error(e)),
+                        Err(e) => { return Err(match_error(e)); }
                     }
                 }
                 PutMode::Create => {
                     match hdfs.create(&location) {
                         Ok(f) => f,
-                        Err(e) => Err(match_error(e)),
+                        Err(e) => { return Err(match_error(e)); }
                     }
                 }
                 PutMode::Update(_) => unreachable!(),
