@@ -109,7 +109,7 @@ impl ObjectStore for HadoopFileSystem {
         let location = String::from(location.clone());
         maybe_spawn_blocking(move || {
             
-            payload.iter().try_for_each(|bytes| {
+            let result = payload.iter().try_for_each(|bytes| {
                 // Note that the variable file either becomes a HdfsFile f, or an error
                 let (file, err) = match opts.mode {
                     PutMode::Overwrite => {
@@ -133,14 +133,21 @@ impl ObjectStore for HadoopFileSystem {
 
                 let file = file.unwrap();
                 file.write(bytes.as_ref()).map_err(match_error)?;
-                file.close().map_err(match_error);
+                let result = file.close().map_err(match_error);
+                if result.is_err() {
+                    return Err(match_error(HdfsErr::Generic("Error closing the HDFS file".to_string())))
+                }
                 Ok(())
             });   
 
-            return Ok(PutResult {
-                e_tag: None,
-                version: None,
-            });
+            if result.is_err() {
+                return Err(result);
+            } else {
+                return Ok(PutResult {
+                    e_tag: None,
+                    version: None,
+                });
+            }
         })
         .await
     }
