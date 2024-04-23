@@ -108,25 +108,33 @@ impl ObjectStore for HadoopFileSystem {
         // The following variable will shadow location: &Path
         let location = String::from(*location);
         maybe_spawn_blocking(move || {
-            // Note that the variable file either becomes a HdfsFile f, or an error
-            let file = match opts.mode {
-                PutMode::Overwrite => {
-                    match hdfs.create_with_overwrite(&location, true) {
-                        Ok(f) => f,
-                        Err(e) => { return Err(match_error(e)); }
+            
+            payload.iter().try_for_each(|bytes| {
+                // Note that the variable file either becomes a HdfsFile f, or an error
+                let (file, err) = match opts.mode {
+                    PutMode::Overwrite => {
+                        match hdfs.create_with_overwrite(&location, true) {
+                            Ok(f) => (f, None),
+                            Err(e) => (None, e),
+                        }
                     }
-                }
-                PutMode::Create => {
-                    match hdfs.create(&location) {
-                        Ok(f) => f,
-                        Err(e) => { return Err(match_error(e)); }
+                    PutMode::Create => {
+                        match hdfs.create(&location) {
+                            Ok(f) => (f, None),
+                            Err(e) => (None, e),
+                        }
                     }
-                }
-                PutMode::Update(_) => unreachable!(),
-            };
+                    PutMode::Update(_) => unreachable!(),
+                };
 
-            file.write(payload.as_ref().as_ref()).map_err(match_error)?;
-            file.close().map_err(match_error);
+                if err != None {
+                    return Err(match_error(err));
+                }
+                
+                file.write(bytes.as_ref()).map_err(match_error)?;
+                file.close().map_err(match_error);
+                Ok(())
+            });   
 
             return Ok(PutResult {
                 e_tag: None,
