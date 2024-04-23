@@ -177,7 +177,7 @@ impl ObjectStore for HadoopFileSystem {
     ///
     /// Client should prefer [`ObjectStore::put`] for small payloads, as streaming uploads
     /// typically require multiple separate requests. See [`MultipartUpload`] for more information
-    async fn put_multipart_opts(&self, location: &Path, opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
+    async fn put_multipart_opts(&self, _location: &Path, _opts: PutMultipartOpts) -> Result<Box<dyn MultipartUpload>> {
         
         todo!()
     }
