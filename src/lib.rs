@@ -28,7 +28,7 @@ pub struct HadoopFileSystem {
     hdfs: Arc<HdfsFs>,
 }
 
-impl std::fmt::Display for HadoopFileSystem {
+impl Display for HadoopFileSystem {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HadoopFileSystem({})", self.get_path_root())
     }
@@ -201,10 +201,10 @@ impl ObjectStore for HadoopFileSystem {
             let range = if let Some(range) = options.range {
                 range
             } else {
-                Range {
+                object_store::GetRange::Bounded(Range {
                     start: 0,
                     end: file_status.len(),
-                }
+                })
             };
 
             // Read Buffer
