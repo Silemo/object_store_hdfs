@@ -125,7 +125,7 @@ impl ObjectStore for HadoopFileSystem {
                 PutMode::Update(_) => unreachable!(),
             };
 
-            file.write(payload.as_ref()).map_err(match_error)?;
+            file.write(payload.as_ref().as_ref()).map_err(match_error)?;
             file.close().map_err(match_error);
 
             return Ok(PutResult {
