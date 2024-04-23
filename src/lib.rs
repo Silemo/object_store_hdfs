@@ -140,13 +140,14 @@ impl ObjectStore for HadoopFileSystem {
                 Ok(())
             });   
 
-            if result.is_err() {
-                return Err(result);
-            } else {
-                return Ok(PutResult {
-                    e_tag: None,
-                    version: None,
-                });
+            match result {
+                Ok(()) => {
+                    return Ok(PutResult {
+                        e_tag: None,
+                        version: None,
+                    });
+                },
+                Err(err) => return Err(err),
             }
         })
         .await
