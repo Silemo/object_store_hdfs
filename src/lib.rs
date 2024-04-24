@@ -566,3 +566,23 @@ where
     //#[cfg(not(feature = "try_spawn_blocking"))]
     //f()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn file_test() {
+        let integration = HadoopFileSystem::new();
+
+        put_get_delete_list(&integration).await;
+        get_opts(&integration).await;
+        list_uses_directories_correctly(&integration).await;
+        list_with_delimiter(&integration).await;
+        rename_and_copy(&integration).await;
+        copy_if_not_exists(&integration).await;
+        copy_rename_nonexistent_object(&integration).await;
+        stream_get(&integration).await;
+        put_opts(&integration, false).await;
+    }
+}
