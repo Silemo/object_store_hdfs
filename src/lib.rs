@@ -577,6 +577,7 @@ mod tests_util {
         ObjectMeta,
     };
     use futures::stream::{FuturesUnordered, BoxStream};
+    use futures::StreamExt;
     use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng};
     use futures::TryStreamExt;
@@ -1631,7 +1632,6 @@ mod tests {
     use super::*;
     use crate::tests_util::*;
 
-    #[test]
     #[tokio::test]
     async fn file_test() {
         let integration = HadoopFileSystem::new();
