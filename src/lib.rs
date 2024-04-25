@@ -567,14 +567,15 @@ where
     //f()
 }
 
+#[cfg(test)]
 mod tests_util {
 
     use object_store::{
         Error, Result, DynObjectStore, path::Path, GetOptions,
         GetRange, PutPayload, ObjectStore, Attributes, Attribute,
-        PutMode, UpdateVersion, WriteMultipart, 
+        PutMode, UpdateVersion, WriteMultipart, multipart::MultipartStore,
+        ObjectMeta,
     };
-    use chrono::TimeZone;
     use futures::stream::{FuturesUnordered, BoxStream};
     use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng};
