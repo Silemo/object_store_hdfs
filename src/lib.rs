@@ -569,6 +569,29 @@ where
 
 mod tests_util {
 
+    use object_store::{
+        Error, Result, DynObjectStore, path::Path, GetOptions,
+        GetRange, PutPayload, ObjectStore, Attributes, Attribute,
+        PutMode, UpdateVersion, WriteMultipart, 
+    };
+    use chrono::TimeZone;
+    use futures::stream::{FuturesUnordered, BoxStream};
+    use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng};
+    use futures::TryStreamExt;
+    use bytes::Bytes;
+
+    pub async fn flatten_list_stream(
+        storage: &DynObjectStore,
+        prefix: Option<&Path>,
+    ) -> Result<Vec<Path>> {
+        storage
+            .list(prefix)
+            .map_ok(|meta| meta.location)
+            .try_collect::<Vec<Path>>()
+            .await
+    }
+
     pub async fn put_get_delete_list(storage: &DynObjectStore) {
         delete_fixtures(storage).await;
 
