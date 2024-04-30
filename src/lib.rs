@@ -23,6 +23,13 @@ use object_store::{
 // TODO: Version 0.9
 // use tokio::io::AsyncWrite;
 
+// HopsFS server name and hdfs local directory
+const HOPS_FS_FULL: &str = "hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/";
+const HOPS_FS_PREFIX: &str = "hdfs://rpc.namenode.service.consul:8020/";
+const HOPS_FS_LOC_PATH: &str = "/user/hdfs/tests/";
+const HOPS_FS_TESTS: &str = "/tests/";
+const HOPS_FS_TESTS_NO_SLASH: &str = "tests";
+
 #[derive(Debug)]
 pub struct HadoopFileSystem {
     hdfs: Arc<HdfsFs>,
@@ -44,7 +51,7 @@ impl HadoopFileSystem {
     /// Create new HadoopFileSystem by getting HdfsFs from default path
     pub fn new() -> Self {
         Self {
-            hdfs: get_hdfs_by_full_path("default").expect("Fail to get default HdfsFs"),
+            hdfs: get_hdfs_by_full_path(HOPS_FS_FULL).expect("Fail to get default HdfsFs"),
         }
     }
 
@@ -57,11 +64,13 @@ impl HadoopFileSystem {
     }
 
     pub fn get_path_root(&self) -> String {
-        self.hdfs.url().to_owned()
+        let root = self.hdfs.url().to_owned();
+        print!("get_path_root - ROOT : {} \n", root);
+        format!("{}{}", self.hdfs.url().to_owned(), HOPS_FS_LOC_PATH)
     }
 
     pub fn get_path(&self, full_path: &str) -> Path {
-        get_path(full_path, self.hdfs.url())
+        get_path(full_path, &self.get_path_root())
     }
 
     fn read_range(range: &Range<usize>, file: &HdfsFile) -> Result<Bytes> {
@@ -107,20 +116,29 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
         let location = String::from(location.clone());
+        print!("put_opts - LOCATION: {} \n", location);
         maybe_spawn_blocking(move || {
             
             let result = payload.iter().try_for_each(|bytes| {
                 // Note that the variable file either becomes a HdfsFile f, or an error
                 let (file, err) = match opts.mode {
                     PutMode::Overwrite => {
+                        print!("put_opts - Create with overwrite {} \n", location);
                         match hdfs.create_with_overwrite(&location, true) {
-                            Ok(f) => (Some(f), None),
+                            Ok(f) => {
+                                print!("put_opts - OK -> Create with overwrite \n");
+                                (Some(f), None)
+                            },
                             Err(e) => (None, Some(e)),
                         }
                     }
                     PutMode::Create => {
+                        print!("put_opts - CREATE \n");
                         match hdfs.create(&location) {
-                            Ok(f) => (Some(f), None),
+                            Ok(f) => {
+                                print!("put_opts - OK -> Create \n");
+                                (Some(f), None)
+                            },
                             Err(e) => (None, Some(e)),
                         }
                     }
@@ -132,7 +150,9 @@ impl ObjectStore for HadoopFileSystem {
                 }
 
                 let file = file.unwrap();
+                print!("put_opts - WRITING on file \n");
                 file.write(bytes.as_ref()).map_err(match_error)?;
+                print!("put_opts - COMPLETED writing on file \n");
                 let result = file.close().map_err(match_error);
                 if result.is_err() {
                     return Err(match_error(HdfsErr::Generic("Error closing the HDFS file".to_string())))
@@ -140,6 +160,7 @@ impl ObjectStore for HadoopFileSystem {
                 Ok(())
             });   
 
+            print!("put_opts: Out of maybe_spawn_blocking function \n");
             match result {
                 Ok(()) => {
                     return Ok(PutResult {
@@ -274,7 +295,7 @@ impl ObjectStore for HadoopFileSystem {
     async fn delete(&self, location: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
-        let location = String::from(location.clone());
+        let location = format!("{}{}", HOPS_FS_TESTS, String::from(location.clone()));
 
         maybe_spawn_blocking(move || {
             hdfs.delete(&location, false).map_err(match_error)?;
@@ -289,8 +310,17 @@ impl ObjectStore for HadoopFileSystem {
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
         let default_path = Path::from(self.get_path_root());
         let prefix = prefix.unwrap_or(&default_path);
+        let prefix = {
+            if !String::from(prefix.as_ref()).starts_with(HOPS_FS_TESTS_NO_SLASH) {
+                Path::from(format!("{}{}", HOPS_FS_TESTS,  String::from(prefix.as_ref())))
+            } else {
+                prefix.clone()
+            }
+        };
+        print!("list - PREFIX: {} \n", String::from(prefix.clone()));
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
+        print!("list - hdfs_root: {} \n", hdfs_root);
         let walkdir =
             HdfsWalkDir::new_with_hdfs(String::from(prefix.clone()), hdfs)
                 .min_depth(1);
@@ -300,9 +330,12 @@ impl ObjectStore for HadoopFileSystem {
                 match convert_walkdir_result(result_dir_entry) {
                     Err(e) => Some(Err(e)),
                     Ok(None) => None,
-                    Ok(entry @ Some(_)) => entry
+                    Ok(entry @ Some(_)) => {
+                        print!("list - ENTRY: {} \n", entry.as_ref().unwrap().name());
+                        entry
                         .filter(|dir_entry| dir_entry.is_file())
-                        .map(|entry| Ok(convert_metadata(entry, &hdfs_root))),
+                        .map(|entry| Ok(convert_metadata(entry, &hdfs_root)))
+                    },
                 }
             });
 
@@ -345,8 +378,10 @@ impl ObjectStore for HadoopFileSystem {
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
         let default_path = Path::from(self.get_path_root());
         let prefix = prefix.unwrap_or(&default_path);
+        print!("list_with_delimiter - PREFIX: {} \n", prefix);
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
+        print!("list_with_delimiter - hdfs_root: {} \n", hdfs_root);
         let walkdir =
             HdfsWalkDir::new_with_hdfs(String::from(prefix.clone()), hdfs)
                 .min_depth(1)
@@ -355,30 +390,50 @@ impl ObjectStore for HadoopFileSystem {
         let prefix = prefix.clone();
         maybe_spawn_blocking(move || {
             let mut common_prefixes = BTreeSet::new();
+            print!("list_with_delimiter - common_prefixes length: {} \n", common_prefixes.len());
             let mut objects = Vec::new();
 
             for entry_res in walkdir.into_iter().map(convert_walkdir_result) {
                 if let Some(entry) = entry_res? {
+                    print!("list_with_delimiter - ENTRY: {} \n", &entry.name());
                     let is_directory = entry.is_directory();
+                    print!("list_with_delimiter - is_directory: {} \n", is_directory);
                     let entry_location = get_path(entry.name(), &hdfs_root);
 
                     let mut parts = match entry_location.prefix_match(&prefix) {
-                        Some(parts) => parts,
-                        None => continue,
+                        Some(parts) => {
+                            print!("list_with_delimiter - PARTS Some \n");
+                            parts
+                        },
+                        None => {
+                            print!("list_with_delimiter - PARTS None \n");
+                            continue
+                        },
                     };
 
                     let common_prefix = match parts.next() {
-                        Some(p) => p,
-                        None => continue,
+                        Some(p) => {
+                            print!("list_with_delimiter - common_prefix Some \n");
+                            p
+                        },
+                        None => {
+                            print!("list_with_delimiter - common_prefix None \n");
+                            continue
+                        },
                     };
 
                     drop(parts);
 
                     if is_directory {
+                        print!("list_with_delimiter - is_directory condition \n");
                         common_prefixes.insert(prefix.child(common_prefix));
                     } else {
+                        print!("list_with_delimiter - push object \n");
                         objects.push(convert_metadata(entry, &hdfs_root));
                     }
+                }
+                else {
+                    print!("list_with_delimiter - None entry value here! \n");
                 }
             }
 
@@ -490,7 +545,9 @@ fn match_error(err: HdfsErr) -> Error {
 
 /// Create Path without prefix
 pub fn get_path(full_path: &str, prefix: &str) -> Path {
+    print!("get_path - PREFIX: {} \n", prefix);
     let partial_path = full_path.strip_prefix(prefix).unwrap();
+    print!("get_path - Partial Path: {} \n", &partial_path);
     Path::from(partial_path)
 }
 
@@ -606,7 +663,9 @@ mod tests_util {
         let location = Path::from("test_dir/test_file.json");
 
         let data = Bytes::from("arbitrary data");
+        print!("put_get_delete - Before PUT function \n");
         storage.put(&location, data.clone().into()).await.unwrap();
+        print!("put_get_delete - After PUT function\n");
 
         let root = Path::from("/");
 
