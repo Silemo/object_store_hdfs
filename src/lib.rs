@@ -20,14 +20,19 @@ use object_store::{
     //util::{self, maybe_spawn_blocking}, 
 };
 
+use crate::path::*;
+
 // TODO: Version 0.9
 // use tokio::io::AsyncWrite;
 
 // HopsFS server name and hdfs local directory
 const HOPS_FS_FULL: &str = "hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/";
 const HOPS_FS_PREFIX: &str = "hdfs://rpc.namenode.service.consul:8020/";
+const HOPS_FS_PATH_FULL: &str = "hdfs:/rpc.namenode.service.consul:8020/user/hdfs/tests";
+const HOPS_FS_PATH_PREFIX: &str = "hdfs:/rpc.namenode.service.consul:8020";
+const HOPS_FS_TESTS: &str = "tests/";
+
 const HOPS_FS_LOC_PATH: &str = "/user/hdfs/tests/";
-const HOPS_FS_TESTS: &str = "/tests/";
 const HOPS_FS_TESTS_NO_SLASH: &str = "tests";
 
 #[derive(Debug)]
@@ -67,10 +72,6 @@ impl HadoopFileSystem {
         let root = self.hdfs.url().to_owned();
         print!("get_path_root - ROOT : {} \n", root);
         format!("{}{}", self.hdfs.url().to_owned(), HOPS_FS_LOC_PATH)
-    }
-
-    pub fn get_path(&self, full_path: &str) -> Path {
-        get_path(full_path, &self.get_path_root())
     }
 
     fn read_range(range: &Range<usize>, file: &HdfsFile) -> Result<Bytes> {
@@ -115,7 +116,7 @@ impl ObjectStore for HadoopFileSystem {
 
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
-        let location = String::from(location.clone());
+        let location = from_ext_path_to_loc_fs_str(location);
         print!("put_opts - LOCATION: {} \n", location);
         maybe_spawn_blocking(move || {
             
@@ -295,7 +296,8 @@ impl ObjectStore for HadoopFileSystem {
     async fn delete(&self, location: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following variable will shadow location: &Path
-        let location = format!("{}{}", HOPS_FS_TESTS, String::from(location.clone()));
+        let location = from_ext_path_to_loc_fs_str(location);
+        print!("delete - LOCATION: {} \n", location);
 
         maybe_spawn_blocking(move || {
             hdfs.delete(&location, false).map_err(match_error)?;
@@ -309,20 +311,21 @@ impl ObjectStore for HadoopFileSystem {
     /// It will recursively search leaf files whose depth is larger than 1
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
         let default_path = Path::from(self.get_path_root());
-        let prefix = prefix.unwrap_or(&default_path);
+        let prefix = String::from(prefix.unwrap_or(&default_path));
         let prefix = {
-            if !String::from(prefix.as_ref()).starts_with(HOPS_FS_TESTS_NO_SLASH) {
-                Path::from(format!("{}{}", HOPS_FS_TESTS,  String::from(prefix.as_ref())))
+            if !prefix.starts_with(HOPS_FS_TESTS_NO_SLASH) &&
+               !prefix.starts_with("hdfs")                     {
+                from_ext_str_to_abs_fs_str(&prefix)
             } else {
-                prefix.clone()
+                prefix
             }
         };
-        print!("list - PREFIX: {} \n", String::from(prefix.clone()));
+        print!("list - PREFIX: {} \n", prefix);
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
         print!("list - hdfs_root: {} \n", hdfs_root);
         let walkdir =
-            HdfsWalkDir::new_with_hdfs(String::from(prefix.clone()), hdfs)
+            HdfsWalkDir::new_with_hdfs(prefix, hdfs)
                 .min_depth(1);
 
         let s =
@@ -377,13 +380,25 @@ impl ObjectStore for HadoopFileSystem {
     /// It will not recursively search leaf files whose depth is larger than 1
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
         let default_path = Path::from(self.get_path_root());
-        let prefix = prefix.unwrap_or(&default_path);
+        let prefix = String::from(prefix.unwrap_or(&default_path));
+        let prefix = {
+            if !prefix.starts_with("hdfs") {
+                from_abs_str_to_loc_path(&prefix)
+
+            } else if !prefix.starts_with(HOPS_FS_TESTS_NO_SLASH) {
+                from_ext_str_to_loc_fs_path(&prefix)
+
+            } else {
+                prefix
+
+            }
+        };
         print!("list_with_delimiter - PREFIX: {} \n", prefix);
         let hdfs = self.hdfs.clone();
         let hdfs_root = self.get_path_root();
         print!("list_with_delimiter - hdfs_root: {} \n", hdfs_root);
         let walkdir =
-            HdfsWalkDir::new_with_hdfs(String::from(prefix.clone()), hdfs)
+            HdfsWalkDir::new_with_hdfs(prefix, hdfs)
                 .min_depth(1)
                 .max_depth(1);
 
@@ -398,7 +413,7 @@ impl ObjectStore for HadoopFileSystem {
                     print!("list_with_delimiter - ENTRY: {} \n", &entry.name());
                     let is_directory = entry.is_directory();
                     print!("list_with_delimiter - is_directory: {} \n", is_directory);
-                    let entry_location = get_path(entry.name(), &hdfs_root);
+                    let entry_location = from_abs_str_to_loc_path(entry.name());
 
                     let mut parts = match entry_location.prefix_match(&prefix) {
                         Some(parts) => {
@@ -447,6 +462,7 @@ impl ObjectStore for HadoopFileSystem {
 
     /// Copy an object from one path to another.
     /// If there exists an object at the destination, it will be overwritten.
+    /// To and From path are assumed to be relative paths!
     async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following two variables will shadow from: &Path and to: &Path
@@ -516,6 +532,115 @@ impl ObjectStore for HadoopFileSystem {
     }
 }
 
+mod path {
+    use crate::{HOPS_FS_FULL, HOPS_FS_PATH_FULL, HOPS_FS_PREFIX, HOPS_FS_TESTS};
+    use object_store::path::*;
+
+    /// Convert a local-path String, to an absolute-path String
+    /// 
+    /// Example:
+    /// String: tests/test_dir/test.json -> String: hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/test_dir/test.json
+    pub fn from_loc_str_to_abs_str(loc_str: &str) -> String {
+        print!("from_loc_str_to_abs_str - loc_str: {} \n", loc_str);
+        format!("{}{}", HOPS_FS_PREFIX, loc_str)
+    }
+
+    /// Convert a local-path Path, to an absolute-path String
+    /// 
+    /// Example:
+    /// Path: tests/test_dir/test.json -> String: hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/test_dir/test.json
+    pub fn from_loc_path_to_abs_str(loc_path: &Path) -> String {
+        print!("from_loc_path_to_abs_str - loc_path: {} \n", loc_path);
+        from_loc_str_to_abs_str(&String::from(loc_path))
+    }
+    
+    /// Convert a absolute-path String, to an local-path String
+    /// 
+    /// Example:
+    /// String: hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/test_dir/test.json -> String: tests/test_dir/test.json
+    pub fn from_abs_str_to_loc_str(abs_str: &str) -> String {
+        print!("from_abs_str_to_loc_str - abs_str: {} \n", abs_str);
+        if abs_str.starts_with(HOPS_FS_PATH_FULL) {
+            return abs_str.strip_prefix(HOPS_FS_PATH_FULL).unwrap().to_string();
+
+        } else {
+            return abs_str.strip_prefix(HOPS_FS_PREFIX).unwrap().to_string();
+
+        }
+    }
+
+    /// Convert a absolute-path String, to an local-path Path
+    /// 
+    /// Example:
+    /// String: hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/test_dir/test.json -> Path: tests/test_dir/test.json
+    pub fn from_abs_str_to_loc_path(abs_str: &str) -> Path {
+        print!("from_abs_str_to_loc_path - abs_str: {} \n", abs_str);
+        Path::from(from_abs_str_to_loc_path(abs_str))
+    }
+
+    /// Convert an external String, to an local-path String
+    /// 
+    /// Example:
+    /// String: test_dir/test.json -> String: tests/test_dir/test.json
+    pub fn from_ext_str_to_loc_fs_str(ext_str: &str) -> String {
+        print!("from_ext_str_to_loc_fs_str - ext_str: {} \n", ext_str);
+        format!("{}{}", HOPS_FS_TESTS, ext_str)
+    }
+
+    /// Convert an external Path, to an local-path String
+    /// 
+    /// Example:
+    /// Path: test_dir/test.json -> String: tests/test_dir/test.json
+    pub fn from_ext_path_to_loc_fs_str(ext_path: &Path) -> String {
+        print!("from_ext_path_to_loc_fs_str - ext_path: {} \n", ext_path);
+        from_ext_str_to_loc_fs_str(&String::from(ext_path))
+    }
+
+    /// Convert an external String, to an local-path Path
+    /// 
+    /// Example:
+    /// String: test_dir/test.json -> Path: tests/test_dir/test.json
+    pub fn from_ext_str_to_loc_fs_path(ext_str: &str) -> Path {
+        print!("from_ext_str_to_loc_fs_path - ext_str: {} \n", ext_str);
+        Path::from(from_ext_str_to_loc_fs_str(ext_str))
+    }
+
+    /// Convert an external Path, to an local-path Path
+    /// 
+    /// Example:
+    /// Path: test_dir/test.json -> Path: tests/test_dir/test.json
+    pub fn from_ext_path_to_loc_fs_path(ext_path: &Path) -> Path {
+        print!("from_ext_path_to_loc_fs_path - ext_path: {} \n", ext_path);
+        from_ext_str_to_loc_fs_path(&String::from(ext_path))
+    }
+
+    /// Convert an external String, to an absolute-path String
+    /// 
+    /// Example:
+    /// String: test_dir/test.json -> String: hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/test_dir/test.json
+    pub fn from_ext_str_to_abs_fs_str(ext_str: &str) -> String {
+        print!("from_ext_str_to_abs_fs_str - ext_str: {} \n", ext_str);
+        format!("{}{}", HOPS_FS_FULL, ext_str)
+    }
+
+    /// Convert an external Path, to an absolute-path String
+    /// 
+    /// Example:
+    /// Path: test_dir/test.json -> String: hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/test_dir/test.json
+    pub fn from_ext_path_to_abs_fs_str(ext_path: &Path) -> String {
+        print!("from_ext_path_to_abs_fs_str - ext_path: {} \n", ext_path);
+        from_ext_str_to_abs_fs_str(&String::from(ext_path))
+    }
+
+    /// Create Path without prefix. This is assumed to become a relative path!
+    pub fn get_path(full_path: &str, prefix: &str) -> Path {
+        print!("get_path - PREFIX: {} \n", prefix);
+        let partial_path = full_path.strip_prefix(prefix).unwrap();
+        print!("get_path - Partial Path: {} \n", &partial_path);
+        Path::from(partial_path)
+    }
+}
+
 /// Matches HdfsErr to its corresponding ObjectStoreError
 fn match_error(err: HdfsErr) -> Error {
     match err {
@@ -541,14 +666,6 @@ fn match_error(err: HdfsErr) -> Error {
             source: Box::new(HdfsErr::Generic(err_str)),
         },
     }
-}
-
-/// Create Path without prefix
-pub fn get_path(full_path: &str, prefix: &str) -> Path {
-    print!("get_path - PREFIX: {} \n", prefix);
-    let partial_path = full_path.strip_prefix(prefix).unwrap();
-    print!("get_path - Partial Path: {} \n", &partial_path);
-    Path::from(partial_path)
 }
 
 /// Convert HDFS file status to ObjectMeta
@@ -654,6 +771,7 @@ mod tests_util {
     pub async fn put_get_delete_list(storage: &DynObjectStore) {
         delete_fixtures(storage).await;
 
+        print!("put_get_delete_list - After delete_fixtures \n");
         let content_list = flatten_list_stream(storage, None).await.unwrap();
         assert!(
             content_list.is_empty(),
@@ -1669,6 +1787,7 @@ mod tests_util {
 
     async fn delete_fixtures(storage: &DynObjectStore) {
         let paths = storage.list(None).map_ok(|meta| meta.location).boxed();
+        print!("delete_fixtures - After list \n");
         storage
             .delete_stream(paths)
             .try_collect::<Vec<_>>()
