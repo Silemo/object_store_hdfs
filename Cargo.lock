@@ -544,6 +544,7 @@ dependencies = [
  "futures",
  "object_store",
  "rand",
+ "snafu",
  "tokio",
 ]
 
