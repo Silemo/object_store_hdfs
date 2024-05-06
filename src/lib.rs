@@ -138,7 +138,19 @@ pub enum Error {
     #[snafu(display("Not Modified ObjectStore Error : {}", source))]
     NotModified {
         source: ErrorObjectStore,
-    }
+    },
+    
+    #[snafu(display("Invalid Get Range, Inconsistent! Range from {} to {}", start, end))]
+    GetRangeInconsistent {
+        start: usize,
+        end: usize, 
+    },
+
+    #[snafu(display("Invalid Get Range, Start too large! Requested:  {} Actual:  {}", requested, actual))]
+    GetRangeStartTooLarge {
+        requested: usize,
+        actual: usize,
+    },
 }
 
 impl From<Error> for ErrorObjectStore{
@@ -183,6 +195,33 @@ impl From<HdfsErr> for Error {
                 source: HdfsErr::Generic(err_str),
             },
         }
+    }
+}
+
+/// Matches HdfsErr to its corresponding ObjectStoreError
+fn match_error(err: HdfsErr) -> ErrorObjectStore {
+    match err {
+        HdfsErr::FileNotFound(path) => ErrorObjectStore::NotFound {
+            path: path.clone(),
+            source: Box::new(HdfsErr::FileNotFound(path)),
+        },
+        HdfsErr::FileAlreadyExists(path) => ErrorObjectStore::AlreadyExists {
+            path: path.clone(),
+            source: Box::new(HdfsErr::FileAlreadyExists(path)),
+        },
+        HdfsErr::InvalidUrl(path) => ErrorObjectStore::InvalidPath {
+            source: ErrorObjectStorePath::InvalidPath {
+                path: PathBuf::from(path),
+            },
+        },
+        HdfsErr::CannotConnectToNameNode(namenode_uri) => ErrorObjectStore::Generic {
+            store: "HadoopFileSystem",
+            source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
+        },
+        HdfsErr::Generic(err_str) => ErrorObjectStore::Generic {
+            store: "HadoopFileSystem",
+            source: Box::new(HdfsErr::Generic(err_str)),
+        },
     }
 }
 
@@ -860,33 +899,6 @@ mod hdfs_path {
     }
 }
 
-/// Matches HdfsErr to its corresponding ObjectStoreError
-fn match_error(err: HdfsErr) -> ErrorObjectStore {
-    match err {
-        HdfsErr::FileNotFound(path) => ErrorObjectStore::NotFound {
-            path: path.clone(),
-            source: Box::new(HdfsErr::FileNotFound(path)),
-        },
-        HdfsErr::FileAlreadyExists(path) => ErrorObjectStore::AlreadyExists {
-            path: path.clone(),
-            source: Box::new(HdfsErr::FileAlreadyExists(path)),
-        },
-        HdfsErr::InvalidUrl(path) => ErrorObjectStore::InvalidPath {
-            source: ErrorObjectStorePath::InvalidPath {
-                path: PathBuf::from(path),
-            },
-        },
-        HdfsErr::CannotConnectToNameNode(namenode_uri) => ErrorObjectStore::Generic {
-            store: "HadoopFileSystem",
-            source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
-        },
-        HdfsErr::Generic(err_str) => ErrorObjectStore::Generic {
-            store: "HadoopFileSystem",
-            source: Box::new(HdfsErr::Generic(err_str)),
-        },
-    }
-}
-
 /// Convert HDFS file status to ObjectMeta
 pub fn convert_metadata(file: FileStatus, prefix: &str) -> ObjectMeta {
     ObjectMeta {
@@ -959,6 +971,50 @@ where
     //#[cfg(not(feature = "try_spawn_blocking"))]
     //f()
 }
+
+pub fn is_valid(get_range: GetRange) -> Result<(), Error> {
+    match get_range {
+        GetRange::Bounded(r) if r.end <= r.start => {
+            return Err(Error::GetRangeInconsistent {
+                start: r.start,
+                end: r.end,
+            });
+        }
+        _ => (),
+    };
+    Ok(())
+}
+
+/// Convert to a [`Range`] if valid.
+pub fn as_range(get_range: GetRange, actual: usize) -> Result<Range<usize>, Error> {
+    is_valid(get_range.clone())?; 
+    match get_range {
+        GetRange::Bounded(r) => {
+            if r.start >= actual {
+                Err(Error::GetRangeStartTooLarge {
+                    requested: r.start,
+                    actual,
+                })
+            } else if r.end > actual {
+                Ok(r.start..actual)
+            } else {
+                Ok(r.clone())
+            }
+        }
+        GetRange::Offset(o) => {
+            if o >= actual {
+                Err(Error::GetRangeStartTooLarge {
+                    requested: o,
+                    actual,
+                })
+            } else {
+                Ok(o..actual)
+            }
+        }
+        GetRange::Suffix(n) => Ok(actual.saturating_sub(n)..actual),
+    }
+}
+
 
 #[cfg(test)]
 mod tests_util {
