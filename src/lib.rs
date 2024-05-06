@@ -7,15 +7,17 @@ use std::io::Error as ErrorIO;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, OutOfRange, Utc};
+use chrono::{DateTime, Utc};
 use futures::{stream::BoxStream, StreamExt};
-use snafu::ensure;
+use snafu::{ensure, Snafu};
+use url::Url;
 
 use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
-use hdfs::walkdir::{HdfsWalkDir, Error as ErrorWalkdir};
+use hdfs::walkdir::HdfsWalkDir;
+
 use object_store::{
-    path::{self, Path}, Error as ErrorObjectStore, GetOptions, GetResult, GetResultPayload, 
-    ListResult, ObjectMeta, ObjectStore, PutOptions, PutResult,
+    path::{Path, Error as ErrorObjectStorePath}, Error as ErrorObjectStore, GetOptions, GetResult, 
+    GetResultPayload, ListResult, ObjectMeta, ObjectStore, PutOptions, PutResult,
     PutMode, Result, Attributes, PutMultipartOpts, GetRange,
     // TODO: comment next line for Version 0.9
     MultipartUpload, PutPayload,
@@ -40,11 +42,11 @@ const HOPS_FS_TESTS_NO_SLASH: &str = "tests";
 /// A specialized `Error` for HDFS object store-related errors
 #[derive(Debug, Snafu)]
 #[allow(missing_docs)]
-pub(crate) enum Error {
+pub enum Error {
 
     #[snafu(display("Unable to walk dir: {}", source))]
     UnableToWalkDir {
-        source: ErrorWalkdir,
+        source: HdfsErr,
     },
 
     #[snafu(display("Unable to open file {}: {}", path.display(), source))]
@@ -71,10 +73,10 @@ pub(crate) enum Error {
         path: PathBuf,
     },
 
-    #[snafu(display("Unable to close file {}: {}", path.display(), source))]
+    #[snafu(display("Unable to close file {}: {}", path, source))]
     UnableToCloseFile {
         source: HdfsErr,
-        path: PathBuf,
+        path: String,
     },
 
     #[snafu(display("Out of range of file {}, expected: {}, actual: {}", path.display(), expected, actual))]
@@ -86,7 +88,8 @@ pub(crate) enum Error {
 
     #[snafu(display("Requested range was invalid"))]
     InvalidRange {
-        source: InvalidGetRange,
+        start: usize,
+        end: usize,
     },
 
     #[snafu(display("Feature {} not supported", feature))]
@@ -99,9 +102,9 @@ pub(crate) enum Error {
         source: HdfsErr,
     },
 
-    #[snafu(display("File NotFound at {} : {}", path.display(), source))]
+    #[snafu(display("File NotFound at {} : {}", path, source))]
     NotFound {
-        path: PathBuf,
+        path: String,
         source: HdfsErr,
     },
 
@@ -142,7 +145,7 @@ impl From<Error> for ErrorObjectStore{
     fn from(source: Error) -> ErrorObjectStore {
         match source {
             Error::NotFound { path, source } => ErrorObjectStore::NotFound {
-                path: path.to_string_lossy().to_string(),
+                path,
                 source: source.into(),
             },
             Error::AlreadyExists { path, source } => ErrorObjectStore::AlreadyExists {
@@ -157,26 +160,27 @@ impl From<Error> for ErrorObjectStore{
     }
 }
 
+
 impl From<HdfsErr> for Error {
     fn from(source: HdfsErr) -> Error {
         match source {
             HdfsErr::FileNotFound(path) => Error::NotFound {
                 path: path.clone(),
-                source: Box::new(HdfsErr::FileNotFound(path)),
+                source: HdfsErr::FileNotFound(path),
             },
             HdfsErr::FileAlreadyExists(path) => Error::AlreadyExists { 
                 path: path.clone(), 
-                source: Box::new(HdfsErr::FileNotFound(path))
+                source: HdfsErr::FileNotFound(path),
             },
             HdfsErr::InvalidUrl(path) => Error::InvalidPath { 
                 path: path.clone(),
-                source: Box::new(HdfsErr::InvalidUrl(path))
+                source: HdfsErr::InvalidUrl(path),
             },
             HdfsErr::CannotConnectToNameNode(namenode_uri) => Error::CannotConnectToNameNode {
-                source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
+                source: HdfsErr::CannotConnectToNameNode(namenode_uri),
             }, 
             HdfsErr::Generic(err_str) => Error::HdfsGeneric { 
-                source: Box::new(HdfsErr::Generic(err_str)),
+                source: HdfsErr::Generic(err_str),
             },
         }
     }
@@ -233,7 +237,7 @@ impl HadoopFileSystem {
         // Read specifying the range
         let read = file
             .read_with_pos(range.start as i64, buf.as_mut_slice())
-            .map_err(from)?;
+            .map_err(Error::from)?;
        
         // TODO : ENSURE FIX HERE
         // Verify read
@@ -268,15 +272,11 @@ impl ObjectStore for HadoopFileSystem {
     /// Save the provided `payload` to `location` with the given options (TODO: here payload: PutPayload)
     async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
         if matches!(opts.mode, PutMode::Update(_)) {
-            return Err(Error::NotSupported { 
-                feature: "PutMode::Update".to_string(), 
-            });
+            return Err(ErrorObjectStore::NotImplemented);
         }
 
         if !opts.attributes.is_empty() {
-            return Err(Error::NotSupported { 
-                feature: "ETags".to_string(),
-            });
+            return Err(ErrorObjectStore::NotImplemented);
         }
 
         let hdfs = self.hdfs.clone();
@@ -312,18 +312,21 @@ impl ObjectStore for HadoopFileSystem {
                 };
 
                 if err.is_some() {
-                    return Err(from(err));
+                    return Err(match_error(err.expect("Hdfs Error Reason")));
                 }
 
                 let file = file.unwrap();
                 print!("put_opts - WRITING on file \n");
-                file.write(bytes.as_ref()).map_err(from)?;
+                file.write(bytes.as_ref()).map_err(match_error)?;
                 print!("put_opts - COMPLETED writing on file \n");
-                let result = file.close().map_err(from);
+                let result = file.close();
                 if result.is_err() {
-                    return Err(Error::UnableToCloseFile { 
-                        source: result, 
-                        path: file.path(), 
+                    return Err(ErrorObjectStore::Generic { 
+                        store: "HadoopFileSystem",
+                        source: Box::new(Error::UnableToCloseFile { 
+                            source:  result.err().unwrap(), 
+                            path:  file.path().to_string(),
+                        }),
                     })
                 }
                 Ok(())
@@ -375,8 +378,10 @@ impl ObjectStore for HadoopFileSystem {
     /// Perform a get request with options
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         if options.if_match.is_some() || options.if_none_match.is_some() {
-            return Err(Error::NotSupported { 
-                feature: "ETags".to_string(), 
+            return Err(ErrorObjectStore::NotSupported { 
+                source: Box::new(Error::NotSupported { 
+                    feature: "ETags".to_string(), 
+                }),
             });
         }
 
@@ -388,9 +393,9 @@ impl ObjectStore for HadoopFileSystem {
 
         let (blob, object_metadata, range) = maybe_spawn_blocking(move || {
             print!("get_opts - Before opening file \n");
-            let file = hdfs.open(&location).map_err(from)?;
+            let file = hdfs.open(&location).map_err(match_error)?;
             print!("get_opts - After opening - file path: {} \n", file.path());
-            let file_status = file.get_file_status().map_err(from)?;
+            let file_status = file.get_file_status().map_err(match_error)?;
             print!("get_opts - After get_file_status - file status: {} \n", file_status.name());
             // Check Modified
             if options.if_unmodified_since.is_some() || options.if_modified_since.is_some() {
@@ -422,7 +427,7 @@ impl ObjectStore for HadoopFileSystem {
             print!("get_opts - After read_range \n");
 
             // Close file
-            file.close().map_err(from)?;
+            file.close().map_err(match_error)?;
             print!("get_opts - After close of file - file path: {} \n", file.path());    
             // Convert Metadata
             let object_metadata = convert_metadata(file_status, &hdfs_root);
@@ -451,11 +456,11 @@ impl ObjectStore for HadoopFileSystem {
         let location = from_ext_path_to_abs_fs_str(location);
 
         maybe_spawn_blocking(move || {
-            let file = hdfs.open(&location).map_err(from)?;
+            let file = hdfs.open(&location).map_err(match_error)?;
             print!("get_range - After opening - file path: {} \n", file.path());
             let buf = Self::read_range(&range, &file)?;
             print!("get_range - After read_range \n");
-            file.close().map_err(from)?;
+            file.close().map_err(match_error)?;
             print!("get_range - After closing \n");
 
             Ok(buf)
@@ -471,7 +476,7 @@ impl ObjectStore for HadoopFileSystem {
         let location = String::from(location.clone());
 
         maybe_spawn_blocking(move || {
-            let file_status = hdfs.get_file_status(&location).map_err(from)?;
+            let file_status = hdfs.get_file_status(&location).map_err(match_error)?;
             Ok(convert_metadata(file_status, &hdfs_root))
         })
         .await
@@ -485,7 +490,7 @@ impl ObjectStore for HadoopFileSystem {
         print!("delete - LOCATION: {} \n", location);
 
         maybe_spawn_blocking(move || {
-            hdfs.delete(&location, false).map_err(from)?;
+            hdfs.delete(&location, false).map_err(match_error)?;
 
             Ok(())
         })
@@ -661,18 +666,16 @@ impl ObjectStore for HadoopFileSystem {
         maybe_spawn_blocking(move || {
             // We need to make sure the source exist
             if !hdfs.exist(&from) {
-                return Err(Error::NotFound {
-                    path: from.clone(),
-                    source: Box::new(HdfsErr::FileNotFound(from)),
-                });
+                return Err(match_error(HdfsErr::FileNotFound(from)));
+            
             }
             // Delete destination if exists
             if hdfs.exist(&to) {
-                hdfs.delete(&to, false).map_err(from)?;
+                hdfs.delete(&to, false).map_err(match_error)?;
             }
 
             hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
-                .map_err(from)?;
+                .map_err(match_error)?;
 
             Ok(())
         })
@@ -687,7 +690,7 @@ impl ObjectStore for HadoopFileSystem {
         let to = String::from(to.clone());
 
         maybe_spawn_blocking(move || {
-            hdfs.rename(&from, &to).map_err(from)?;
+            hdfs.rename(&from, &to).map_err(match_error)?;
 
             Ok(())
         })
@@ -706,14 +709,11 @@ impl ObjectStore for HadoopFileSystem {
 
         maybe_spawn_blocking(move || {
             if hdfs.exist(&to) {
-                return Err(Error::AlreadyExists {
-                    path: from,
-                    source: Box::new(HdfsErr::FileAlreadyExists(to)),
-                });
+                return Err(match_error(HdfsErr::FileAlreadyExists(to)));
             }
 
             hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
-                .map_err(from)?;
+                .map_err(match_error)?;
 
             Ok(())
         })
@@ -861,31 +861,31 @@ mod hdfs_path {
 }
 
 /// Matches HdfsErr to its corresponding ObjectStoreError
-// fn match_error(err: HdfsErr) -> Error {
-//     match err {
-//         HdfsErr::FileNotFound(path) => Error::NotFound {
-//             path: path.clone(),
-//             source: Box::new(HdfsErr::FileNotFound(path)),
-//         },
-//         HdfsErr::FileAlreadyExists(path) => Error::AlreadyExists {
-//             path: path.clone(),
-//             source: Box::new(HdfsErr::FileAlreadyExists(path)),
-//         },
-//         HdfsErr::InvalidUrl(path) => Error::InvalidPath {
-//             source: path::Error::InvalidPath {
-//                 path: PathBuf::from(path),
-//             },
-//         },
-//         HdfsErr::CannotConnectToNameNode(namenode_uri) => Error::Generic {
-//             store: "HadoopFileSystem",
-//             source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
-//         },
-//         HdfsErr::Generic(err_str) => Error::Generic {
-//             store: "HadoopFileSystem",
-//             source: Box::new(HdfsErr::Generic(err_str)),
-//         },
-//     }
-// }
+fn match_error(err: HdfsErr) -> ErrorObjectStore {
+    match err {
+        HdfsErr::FileNotFound(path) => ErrorObjectStore::NotFound {
+            path: path.clone(),
+            source: Box::new(HdfsErr::FileNotFound(path)),
+        },
+        HdfsErr::FileAlreadyExists(path) => ErrorObjectStore::AlreadyExists {
+            path: path.clone(),
+            source: Box::new(HdfsErr::FileAlreadyExists(path)),
+        },
+        HdfsErr::InvalidUrl(path) => ErrorObjectStore::InvalidPath {
+            source: ErrorObjectStorePath::InvalidPath {
+                path: PathBuf::from(path),
+            },
+        },
+        HdfsErr::CannotConnectToNameNode(namenode_uri) => ErrorObjectStore::Generic {
+            store: "HadoopFileSystem",
+            source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
+        },
+        HdfsErr::Generic(err_str) => ErrorObjectStore::Generic {
+            store: "HadoopFileSystem",
+            source: Box::new(HdfsErr::Generic(err_str)),
+        },
+    }
+}
 
 /// Convert HDFS file status to ObjectMeta
 pub fn convert_metadata(file: FileStatus, prefix: &str) -> ObjectMeta {
@@ -911,22 +911,18 @@ fn check_modified(
 ) -> Result<()> {
     if let Some(date) = get_options.if_modified_since {
         if last_modified <= date {
-            return Err(Error::NotModified {
-                source: ErrorObjectStore {
-                    path: location.to_string(),
-                    source: format!("{} >= {}", date, last_modified).into(),
-                },
+            return Err(ErrorObjectStore::NotModified {
+                path: location.to_string(),
+                source: format!("{} >= {}", date, last_modified).into(),
             });
         }
     }
 
     if let Some(date) = get_options.if_unmodified_since {
         if last_modified > date {
-            return Err(Error::Precondition {
-                source: ErrorObjectStore {
-                    path: location.to_string(),
-                    source: format!("{} < {}", date, last_modified).into(),
-                }
+            return Err(ErrorObjectStore::Precondition {
+                path: location.to_string(),
+                source: format!("{} < {}", date, last_modified).into(),
             });
         }
     }
@@ -941,7 +937,7 @@ fn convert_walkdir_result(
         Ok(entry) => Ok(Some(entry)),
         Err(walkdir_err) => match walkdir_err {
             HdfsErr::FileNotFound(_) => Ok(None),
-            _ => Err(from(HdfsErr::Generic(
+            _ => Err(match_error(HdfsErr::Generic(
                 "Fail to walk hdfs directory".to_owned(),
             ))),
         },
@@ -968,7 +964,7 @@ where
 mod tests_util {
 
     use object_store::{
-        Error, Result, DynObjectStore, path::Path, GetOptions,
+        Error as ErrorObjectStore, Result, DynObjectStore, path::Path, GetOptions,
         GetRange, PutPayload, ObjectStore, Attributes, Attribute,
         PutMode, UpdateVersion, WriteMultipart, multipart::MultipartStore,
         ObjectMeta,
@@ -1032,11 +1028,11 @@ mod tests_util {
 
         // Should return not found
         let err = storage.get(&Path::from("test_dir")).await.unwrap_err();
-        assert!(matches!(err, crate::Error::NotFound { .. }), "{}", err);
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }), "{}", err);
 
         // Should return not found
         let err = storage.head(&Path::from("test_dir")).await.unwrap_err();
-        assert!(matches!(err, crate::Error::NotFound { .. }), "{}", err);
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }), "{}", err);
 
         // List everything starting with a prefix that should return results
         let prefix = Path::from("test_dir");
@@ -1101,7 +1097,7 @@ mod tests_util {
                 let bytes = result.bytes().await.unwrap();
                 assert_eq!(bytes, b"ta".as_ref());
             }
-            Err(Error::NotSupported { .. }) => {}
+            Err(ErrorObjectStore::NotSupported { .. }) => {}
             Err(e) => panic!("{e}"),
         }
 
@@ -1116,7 +1112,7 @@ mod tests_util {
                 let bytes = result.bytes().await.unwrap();
                 assert_eq!(bytes, b"arbitrary data".as_ref());
             }
-            Err(Error::NotSupported { .. }) => {}
+            Err(ErrorObjectStore::NotSupported { .. }) => {}
             Err(e) => panic!("{e}"),
         }
 
@@ -1151,10 +1147,10 @@ mod tests_util {
         assert!(content_list.is_empty());
 
         let err = storage.get(&location).await.unwrap_err();
-        assert!(matches!(err, crate::Error::NotFound { .. }), "{}", err);
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }), "{}", err);
 
         let err = storage.head(&location).await.unwrap_err();
-        assert!(matches!(err, crate::Error::NotFound { .. }), "{}", err);
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }), "{}", err);
 
         // Test handling of paths containing an encoded delimiter
 
@@ -1236,7 +1232,7 @@ mod tests_util {
         assert_eq!(files, vec![emoji_file.clone(), dst2.clone(), dst3.clone()]);
 
         let err = storage.head(&dst).await.unwrap_err();
-        assert!(matches!(err, Error::NotFound { .. }));
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }));
 
         storage.delete(&emoji_file).await.unwrap();
         storage.delete(&dst3).await.unwrap();
@@ -1269,7 +1265,7 @@ mod tests_util {
             .head(&Path::from("HELLO/foo.parquet"))
             .await
             .unwrap_err();
-        assert!(matches!(err, crate::Error::NotFound { .. }), "{}", err);
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }), "{}", err);
 
         storage.delete(&path).await.unwrap();
 
@@ -1388,13 +1384,13 @@ mod tests_util {
 
         for (i, input_path) in paths.iter().enumerate() {
             let err = storage.head(input_path).await.unwrap_err();
-            assert!(matches!(err, crate::Error::NotFound { .. }), "{}", err);
+            assert!(matches!(err, ErrorObjectStore::NotFound { .. }), "{}", err);
 
             if expect_errors.contains(&i) {
                 // Some object stores will report NotFound, but others (such as S3) will
                 // report success regardless.
                 match &out_paths[i] {
-                    Err(Error::NotFound { path: out_path, .. }) => {
+                    Err(ErrorObjectStore::NotFound { path: out_path, .. }) => {
                         assert!(out_path.ends_with(&input_path.to_string()));
                     }
                     Ok(out_path) => {
@@ -1433,7 +1429,7 @@ mod tests_util {
                 let r = integration.get(&path).await.unwrap();
                 assert_eq!(r.attributes, attributes);
             }
-            Err(Error::NotImplemented) => {}
+            Err(ErrorObjectStore::NotImplemented) => {}
             Err(e) => panic!("{e}"),
         }
 
@@ -1446,7 +1442,7 @@ mod tests_util {
                 let r = integration.get(&path).await.unwrap();
                 assert_eq!(r.attributes, attributes);
             }
-            Err(Error::NotImplemented) => {}
+            Err(ErrorObjectStore::NotImplemented) => {}
             Err(e) => panic!("{e}"),
         }
     }
@@ -1461,7 +1457,7 @@ mod tests_util {
             ..GetOptions::default()
         };
         match storage.get_opts(&path, options).await {
-            Ok(_) | Err(Error::NotSupported { .. }) => {}
+            Ok(_) | Err(ErrorObjectStore::NotSupported { .. }) => {}
             Err(e) => panic!("{e}"),
         }
 
@@ -1472,7 +1468,7 @@ mod tests_util {
             ..GetOptions::default()
         };
         match storage.get_opts(&path, options).await {
-            Ok(_) | Err(Error::NotSupported { .. }) => {}
+            Ok(_) | Err(ErrorObjectStore::NotSupported { .. }) => {}
             Err(e) => panic!("{e}"),
         }
 
@@ -1483,7 +1479,7 @@ mod tests_util {
             ..GetOptions::default()
         };
         match storage.get_opts(&path, options).await {
-            Err(Error::Precondition { .. } | Error::NotSupported { .. }) => {}
+            Err(ErrorObjectStore::Precondition { .. } | ErrorObjectStore::NotSupported { .. }) => {}
             d => panic!("{d:?}"),
         }
 
@@ -1492,7 +1488,7 @@ mod tests_util {
             ..GetOptions::default()
         };
         match storage.get_opts(&path, options).await {
-            Err(Error::NotModified { .. } | Error::NotSupported { .. }) => {}
+            Err(ErrorObjectStore::NotModified { .. } | ErrorObjectStore::NotSupported { .. }) => {}
             d => panic!("{d:?}"),
         }
 
@@ -1501,7 +1497,7 @@ mod tests_util {
             ..GetOptions::default()
         };
         match storage.get_opts(&path, options).await {
-            Ok(_) | Err(Error::NotSupported { .. }) => {}
+            Ok(_) | Err(ErrorObjectStore::NotSupported { .. }) => {}
             Err(e) => panic!("{e}"),
         }
 
@@ -1517,14 +1513,14 @@ mod tests_util {
             ..GetOptions::default()
         };
         let err = storage.get_opts(&path, options).await.unwrap_err();
-        assert!(matches!(err, Error::Precondition { .. }), "{err}");
+        assert!(matches!(err, ErrorObjectStore::Precondition { .. }), "{err}");
 
         let options = GetOptions {
             if_none_match: Some(tag.clone()),
             ..GetOptions::default()
         };
         let err = storage.get_opts(&path, options).await.unwrap_err();
-        assert!(matches!(err, Error::NotModified { .. }), "{err}");
+        assert!(matches!(err, ErrorObjectStore::NotModified { .. }), "{err}");
 
         let options = GetOptions {
             if_none_match: Some("invalid".to_string()),
@@ -1550,7 +1546,7 @@ mod tests_util {
             ..GetOptions::default()
         };
         let err = storage.get_opts(&path, options).await.unwrap_err();
-        assert!(matches!(err, Error::Precondition { .. }), "{err}");
+        assert!(matches!(err, ErrorObjectStore::Precondition { .. }), "{err}");
 
         if let Some(version) = meta.version {
             storage.put(&path, "bar".into()).await.unwrap();
@@ -1590,7 +1586,7 @@ mod tests_util {
             .put_opts(&path, "b".into(), PutMode::Create.into())
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::AlreadyExists { .. }), "{err}");
+        assert!(matches!(err, ErrorObjectStore::AlreadyExists { .. }), "{err}");
 
         let b = storage.get(&path).await.unwrap().bytes().await.unwrap();
         assert_eq!(b.as_ref(), b"a");
@@ -1611,7 +1607,7 @@ mod tests_util {
             .put_opts(&path, "d".into(), PutMode::Update(v1.into()).into())
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Precondition { .. }), "{err}");
+        assert!(matches!(err, ErrorObjectStore::Precondition { .. }), "{err}");
 
         storage
             .put_opts(&path, "e".into(), PutMode::Update(v2.clone().into()).into())
@@ -1627,7 +1623,7 @@ mod tests_util {
             .put_opts(&path, "e".into(), PutMode::Update(v2.into()).into())
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::Precondition { .. }), "{err}");
+        assert!(matches!(err, ErrorObjectStore::Precondition { .. }), "{err}");
 
         const NUM_WORKERS: usize = 5;
         const NUM_INCREMENTS: usize = 10;
@@ -1650,15 +1646,15 @@ mod tests_util {
 
                                 match storage.put_opts(&path, new.into(), mode.into()).await {
                                     Ok(_) => break,
-                                    Err(Error::Precondition { .. }) => continue,
+                                    Err(ErrorObjectStore::Precondition { .. }) => continue,
                                     Err(e) => return Err(e),
                                 }
                             }
-                            Err(Error::NotFound { .. }) => {
+                            Err(ErrorObjectStore::NotFound { .. }) => {
                                 let mode = PutMode::Create;
                                 match storage.put_opts(&path, "1".into(), mode.into()).await {
                                     Ok(_) => break,
-                                    Err(Error::AlreadyExists { .. }) => continue,
+                                    Err(ErrorObjectStore::AlreadyExists { .. }) => continue,
                                     Err(e) => return Err(e),
                                 }
                             }
@@ -1707,7 +1703,7 @@ mod tests_util {
         assert!(meta_res.is_err());
         assert!(matches!(
             meta_res.unwrap_err(),
-            crate::Error::NotFound { .. }
+            ErrorObjectStore::NotFound { .. }
         ));
 
         let files = flatten_list_stream(storage, None).await.unwrap();
@@ -1742,7 +1738,7 @@ mod tests_util {
         assert!(get_res.is_err());
         assert!(matches!(
             get_res.unwrap_err(),
-            crate::Error::NotFound { .. }
+            ErrorObjectStore::NotFound { .. }
         ));
 
         // We can abort an in-progress write
@@ -1757,7 +1753,7 @@ mod tests_util {
         assert!(get_res.is_err());
         assert!(matches!(
             get_res.unwrap_err(),
-            crate::Error::NotFound { .. }
+            ErrorObjectStore::NotFound { .. }
         ));
     }
 
@@ -1882,7 +1878,7 @@ mod tests_util {
         let location = location.unwrap_or_else(|| Path::from("this_file_should_not_exist"));
 
         let err = storage.head(&location).await.unwrap_err();
-        assert!(matches!(err, crate::Error::NotFound { .. }));
+        assert!(matches!(err, ErrorObjectStore::NotFound { .. }));
 
         storage.get(&location).await?.bytes().await
     }
@@ -1909,7 +1905,7 @@ mod tests_util {
         assert_eq!(&new_contents, &contents1);
         let result = storage.get(&path1).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), crate::Error::NotFound { .. }));
+        assert!(matches!(result.unwrap_err(), ErrorObjectStore::NotFound { .. }));
 
         // Clean up
         storage.delete(&path2).await.unwrap();
@@ -1929,7 +1925,7 @@ mod tests_util {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::Error::AlreadyExists { .. }
+            ErrorObjectStore::AlreadyExists { .. }
         ));
 
         // copy_if_not_exists() copies contents and allows deleting original
@@ -1940,7 +1936,7 @@ mod tests_util {
         assert_eq!(&new_contents, &contents1);
         let result = storage.get(&path1).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), crate::Error::NotFound { .. }));
+        assert!(matches!(result.unwrap_err(), ErrorObjectStore::NotFound { .. }));
 
         // Clean up
         storage.delete(&path2).await.unwrap();
@@ -1957,17 +1953,17 @@ mod tests_util {
         // copy() errors if source does not exist
         let result = storage.copy(&path1, &path2).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), crate::Error::NotFound { .. }));
+        assert!(matches!(result.unwrap_err(), ErrorObjectStore::NotFound { .. }));
 
         // rename() errors if source does not exist
         let result = storage.rename(&path1, &path2).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), crate::Error::NotFound { .. }));
+        assert!(matches!(result.unwrap_err(), ErrorObjectStore::NotFound { .. }));
 
         // copy_if_not_exists() errors if source does not exist
         let result = storage.copy_if_not_exists(&path1, &path2).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), crate::Error::NotFound { .. }));
+        assert!(matches!(result.unwrap_err(), ErrorObjectStore::NotFound { .. }));
 
         // Clean up
         storage.delete(&path2).await.unwrap();

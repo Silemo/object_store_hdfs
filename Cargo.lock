@@ -546,6 +546,7 @@ dependencies = [
  "rand",
  "snafu",
  "tokio",
+ "url",
 ]
 
 [[package]]

@@ -26,6 +26,7 @@ async-trait = { version = "0.1" }
 futures = { version = "0.3" }
 tokio = { version = "1.18", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
 snafu = "0.7"
+url = "2.2"
 
 # object store and hdfs dependencies
 object_store = "0.10"
