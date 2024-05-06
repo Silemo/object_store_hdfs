@@ -3,17 +3,18 @@ use std::fmt::{Display, Formatter};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::io::Error as ErrorIO;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, OutOfRange, Utc};
 use futures::{stream::BoxStream, StreamExt};
 use snafu::ensure;
 
 use hdfs::hdfs::{get_hdfs_by_full_path, FileStatus, HdfsErr, HdfsFile, HdfsFs};
-use hdfs::walkdir::HdfsWalkDir;
+use hdfs::walkdir::{HdfsWalkDir, Error as ErrorWalkdir};
 use object_store::{
-    path::{self, Path}, Error, GetOptions, GetResult, GetResultPayload, 
+    path::{self, Path}, Error as ErrorObjectStore, GetOptions, GetResult, GetResultPayload, 
     ListResult, ObjectMeta, ObjectStore, PutOptions, PutResult,
     PutMode, Result, Attributes, PutMultipartOpts, GetRange,
     // TODO: comment next line for Version 0.9
@@ -35,6 +36,151 @@ const HOPS_FS_PATH_FULL: &str = "hdfs:/rpc.namenode.service.consul:8020/user/hdf
 const HOPS_FS_LOC_PATH: &str = "/user/hdfs/tests/";
 const HOPS_FS_TESTS: &str = "tests/";
 const HOPS_FS_TESTS_NO_SLASH: &str = "tests";
+
+/// A specialized `Error` for HDFS object store-related errors
+#[derive(Debug, Snafu)]
+#[allow(missing_docs)]
+pub(crate) enum Error {
+
+    #[snafu(display("Unable to walk dir: {}", source))]
+    UnableToWalkDir {
+        source: ErrorWalkdir,
+    },
+
+    #[snafu(display("Unable to open file {}: {}", path.display(), source))]
+    UnableToOpenFile {
+        source: ErrorIO,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to create file {}: {}", path.display(), source))]
+    UnableToCreateFile {
+        source: ErrorIO,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to write on file {}: {}", path.display(), source))]
+    UnableToWriteFile {
+        source: ErrorIO,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to delete file {}: {}", path.display(), source))]
+    UnableToDeleteFile {
+        source: ErrorIO,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Unable to close file {}: {}", path.display(), source))]
+    UnableToCloseFile {
+        source: HdfsErr,
+        path: PathBuf,
+    },
+
+    #[snafu(display("Out of range of file {}, expected: {}, actual: {}", path.display(), expected, actual))]
+    OutOfRange {
+        path: PathBuf,
+        expected: i32,
+        actual: i32,
+    },
+
+    #[snafu(display("Requested range was invalid"))]
+    InvalidRange {
+        source: InvalidGetRange,
+    },
+
+    #[snafu(display("Feature {} not supported", feature))]
+    NotSupported {
+        feature: String,
+    },
+
+    #[snafu(display("Cannot connect to name node : {}", source))]
+    CannotConnectToNameNode {
+        source: HdfsErr,
+    },
+
+    #[snafu(display("File NotFound at {} : {}", path.display(), source))]
+    NotFound {
+        path: PathBuf,
+        source: HdfsErr,
+    },
+
+    #[snafu(display("Unable to convert URL \"{}\" to filesystem path", url))]
+    InvalidUrl {
+        url: Url,
+    },
+
+    #[snafu(display("Filenames containing trailing '/#\\d+/' are not supported: {}", path))]
+    InvalidPath {
+        path: String,
+        source: HdfsErr,
+    },
+
+    #[snafu(display("File already exists at {} : {}", path, source))]
+    AlreadyExists {
+        path: String,
+        source: HdfsErr,
+    },
+
+    #[snafu(display("Generic Hdfs Error"))]
+    HdfsGeneric {
+        source: HdfsErr,
+    },
+
+    #[snafu(display("Precondition ObjectStore Error : {}", source))]
+    Precondition {
+        source: ErrorObjectStore,
+    },
+
+    #[snafu(display("Not Modified ObjectStore Error : {}", source))]
+    NotModified {
+        source: ErrorObjectStore,
+    }
+}
+
+impl From<Error> for ErrorObjectStore{
+    fn from(source: Error) -> ErrorObjectStore {
+        match source {
+            Error::NotFound { path, source } => ErrorObjectStore::NotFound {
+                path: path.to_string_lossy().to_string(),
+                source: source.into(),
+            },
+            Error::AlreadyExists { path, source } => ErrorObjectStore::AlreadyExists {
+                path,
+                source: source.into(),
+            },
+            _ => ErrorObjectStore::Generic {
+                store: "LocalFileSystem",
+                source: Box::new(source),
+            },
+        }
+    }
+}
+
+impl From<HdfsErr> for Error {
+    fn from(source: HdfsErr) -> Error {
+        match source {
+            HdfsErr::FileNotFound(path) => Error::NotFound {
+                path: path.clone(),
+                source: Box::new(HdfsErr::FileNotFound(path)),
+            },
+            HdfsErr::FileAlreadyExists(path) => Error::AlreadyExists { 
+                path: path.clone(), 
+                source: Box::new(HdfsErr::FileNotFound(path))
+            },
+            HdfsErr::InvalidUrl(path) => Error::InvalidPath { 
+                path: path.clone(),
+                source: Box::new(HdfsErr::InvalidUrl(path))
+            },
+            HdfsErr::CannotConnectToNameNode(namenode_uri) => Error::CannotConnectToNameNode {
+                source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
+            }, 
+            HdfsErr::Generic(err_str) => Error::HdfsGeneric { 
+                source: Box::new(HdfsErr::Generic(err_str)),
+            },
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct HadoopFileSystem {
@@ -87,16 +233,17 @@ impl HadoopFileSystem {
         // Read specifying the range
         let read = file
             .read_with_pos(range.start as i64, buf.as_mut_slice())
-            .map_err(match_error)?;
+            .map_err(from)?;
        
         // TODO : ENSURE FIX HERE
         // Verify read
         ensure!(
             read == to_read as i32,
-            Err(Error::Generic {
-                store: "HadoopFileSystem",
-                source: Box::new(HdfsErr::Generic("Fail to read in bound range".to_owned()))
-            }),
+            OutOfRangeSnafu { 
+                path: file.path(), 
+                expected: to_read as i32, 
+                actual: read,
+            },
         );
 
 
@@ -121,11 +268,15 @@ impl ObjectStore for HadoopFileSystem {
     /// Save the provided `payload` to `location` with the given options (TODO: here payload: PutPayload)
     async fn put_opts(&self, location: &Path, payload: PutPayload, opts: PutOptions) -> Result<PutResult> {
         if matches!(opts.mode, PutMode::Update(_)) {
-            return Err(Error::NotImplemented);
+            return Err(Error::NotSupported { 
+                feature: "PutMode::Update".to_string(), 
+            });
         }
 
         if !opts.attributes.is_empty() {
-            return Err(Error::NotImplemented);
+            return Err(Error::NotSupported { 
+                feature: "ETags".to_string(),
+            });
         }
 
         let hdfs = self.hdfs.clone();
@@ -161,16 +312,19 @@ impl ObjectStore for HadoopFileSystem {
                 };
 
                 if err.is_some() {
-                    return Err(match_error(err.expect("Hdfs Error Reason")));
+                    return Err(from(err));
                 }
 
                 let file = file.unwrap();
                 print!("put_opts - WRITING on file \n");
-                file.write(bytes.as_ref()).map_err(match_error)?;
+                file.write(bytes.as_ref()).map_err(from)?;
                 print!("put_opts - COMPLETED writing on file \n");
-                let result = file.close().map_err(match_error);
+                let result = file.close().map_err(from);
                 if result.is_err() {
-                    return Err(match_error(HdfsErr::Generic("Error closing the HDFS file".to_string())))
+                    return Err(Error::UnableToCloseFile { 
+                        source: result, 
+                        path: file.path(), 
+                    })
                 }
                 Ok(())
             });   
@@ -221,9 +375,8 @@ impl ObjectStore for HadoopFileSystem {
     /// Perform a get request with options
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         if options.if_match.is_some() || options.if_none_match.is_some() {
-            return Err(Error::Generic {
-                store: "HadoopFileSystem",
-                source: Box::new(HdfsErr::Generic("ETags not supported".to_string())),
+            return Err(Error::NotSupported { 
+                feature: "ETags".to_string(), 
             });
         }
 
@@ -235,9 +388,9 @@ impl ObjectStore for HadoopFileSystem {
 
         let (blob, object_metadata, range) = maybe_spawn_blocking(move || {
             print!("get_opts - Before opening file \n");
-            let file = hdfs.open(&location).map_err(match_error)?;
+            let file = hdfs.open(&location).map_err(from)?;
             print!("get_opts - After opening - file path: {} \n", file.path());
-            let file_status = file.get_file_status().map_err(match_error)?;
+            let file_status = file.get_file_status().map_err(from)?;
             print!("get_opts - After get_file_status - file status: {} \n", file_status.name());
             // Check Modified
             if options.if_unmodified_since.is_some() || options.if_modified_since.is_some() {
@@ -254,6 +407,12 @@ impl ObjectStore for HadoopFileSystem {
                     end: file_status.len(),
                 }
             };
+            // TODO: COMPARE IT WITH ABOVE
+            //let range = match options.range {
+            //    Some(r) => r.as_range(meta.size).context(InvalidRangeSnafu)?,
+            //    None => 0..meta.size,
+            //};
+
             print!("get_opts - After set range \n");
             print!("get_opts - range.start: {} \n", range.start);
             print!("get_opts - range.end: {} \n", range.end);
@@ -263,7 +422,7 @@ impl ObjectStore for HadoopFileSystem {
             print!("get_opts - After read_range \n");
 
             // Close file
-            file.close().map_err(match_error)?;
+            file.close().map_err(from)?;
             print!("get_opts - After close of file - file path: {} \n", file.path());    
             // Convert Metadata
             let object_metadata = convert_metadata(file_status, &hdfs_root);
@@ -292,11 +451,11 @@ impl ObjectStore for HadoopFileSystem {
         let location = from_ext_path_to_abs_fs_str(location);
 
         maybe_spawn_blocking(move || {
-            let file = hdfs.open(&location).map_err(match_error)?;
+            let file = hdfs.open(&location).map_err(from)?;
             print!("get_range - After opening - file path: {} \n", file.path());
             let buf = Self::read_range(&range, &file)?;
             print!("get_range - After read_range \n");
-            file.close().map_err(match_error)?;
+            file.close().map_err(from)?;
             print!("get_range - After closing \n");
 
             Ok(buf)
@@ -312,7 +471,7 @@ impl ObjectStore for HadoopFileSystem {
         let location = String::from(location.clone());
 
         maybe_spawn_blocking(move || {
-            let file_status = hdfs.get_file_status(&location).map_err(match_error)?;
+            let file_status = hdfs.get_file_status(&location).map_err(from)?;
             Ok(convert_metadata(file_status, &hdfs_root))
         })
         .await
@@ -326,7 +485,7 @@ impl ObjectStore for HadoopFileSystem {
         print!("delete - LOCATION: {} \n", location);
 
         maybe_spawn_blocking(move || {
-            hdfs.delete(&location, false).map_err(match_error)?;
+            hdfs.delete(&location, false).map_err(from)?;
 
             Ok(())
         })
@@ -509,11 +668,11 @@ impl ObjectStore for HadoopFileSystem {
             }
             // Delete destination if exists
             if hdfs.exist(&to) {
-                hdfs.delete(&to, false).map_err(match_error)?;
+                hdfs.delete(&to, false).map_err(from)?;
             }
 
             hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
-                .map_err(match_error)?;
+                .map_err(from)?;
 
             Ok(())
         })
@@ -528,7 +687,7 @@ impl ObjectStore for HadoopFileSystem {
         let to = String::from(to.clone());
 
         maybe_spawn_blocking(move || {
-            hdfs.rename(&from, &to).map_err(match_error)?;
+            hdfs.rename(&from, &to).map_err(from)?;
 
             Ok(())
         })
@@ -554,7 +713,7 @@ impl ObjectStore for HadoopFileSystem {
             }
 
             hdfs::util::HdfsUtil::copy(hdfs.as_ref(), &from, hdfs.as_ref(), &to)
-                .map_err(match_error)?;
+                .map_err(from)?;
 
             Ok(())
         })
@@ -702,31 +861,31 @@ mod hdfs_path {
 }
 
 /// Matches HdfsErr to its corresponding ObjectStoreError
-fn match_error(err: HdfsErr) -> Error {
-    match err {
-        HdfsErr::FileNotFound(path) => Error::NotFound {
-            path: path.clone(),
-            source: Box::new(HdfsErr::FileNotFound(path)),
-        },
-        HdfsErr::FileAlreadyExists(path) => Error::AlreadyExists {
-            path: path.clone(),
-            source: Box::new(HdfsErr::FileAlreadyExists(path)),
-        },
-        HdfsErr::InvalidUrl(path) => Error::InvalidPath {
-            source: path::Error::InvalidPath {
-                path: PathBuf::from(path),
-            },
-        },
-        HdfsErr::CannotConnectToNameNode(namenode_uri) => Error::Generic {
-            store: "HadoopFileSystem",
-            source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
-        },
-        HdfsErr::Generic(err_str) => Error::Generic {
-            store: "HadoopFileSystem",
-            source: Box::new(HdfsErr::Generic(err_str)),
-        },
-    }
-}
+// fn match_error(err: HdfsErr) -> Error {
+//     match err {
+//         HdfsErr::FileNotFound(path) => Error::NotFound {
+//             path: path.clone(),
+//             source: Box::new(HdfsErr::FileNotFound(path)),
+//         },
+//         HdfsErr::FileAlreadyExists(path) => Error::AlreadyExists {
+//             path: path.clone(),
+//             source: Box::new(HdfsErr::FileAlreadyExists(path)),
+//         },
+//         HdfsErr::InvalidUrl(path) => Error::InvalidPath {
+//             source: path::Error::InvalidPath {
+//                 path: PathBuf::from(path),
+//             },
+//         },
+//         HdfsErr::CannotConnectToNameNode(namenode_uri) => Error::Generic {
+//             store: "HadoopFileSystem",
+//             source: Box::new(HdfsErr::CannotConnectToNameNode(namenode_uri)),
+//         },
+//         HdfsErr::Generic(err_str) => Error::Generic {
+//             store: "HadoopFileSystem",
+//             source: Box::new(HdfsErr::Generic(err_str)),
+//         },
+//     }
+// }
 
 /// Convert HDFS file status to ObjectMeta
 pub fn convert_metadata(file: FileStatus, prefix: &str) -> ObjectMeta {
@@ -753,8 +912,10 @@ fn check_modified(
     if let Some(date) = get_options.if_modified_since {
         if last_modified <= date {
             return Err(Error::NotModified {
-                path: location.to_string(),
-                source: format!("{} >= {}", date, last_modified).into(),
+                source: ErrorObjectStore {
+                    path: location.to_string(),
+                    source: format!("{} >= {}", date, last_modified).into(),
+                },
             });
         }
     }
@@ -762,8 +923,10 @@ fn check_modified(
     if let Some(date) = get_options.if_unmodified_since {
         if last_modified > date {
             return Err(Error::Precondition {
-                path: location.to_string(),
-                source: format!("{} < {}", date, last_modified).into(),
+                source: ErrorObjectStore {
+                    path: location.to_string(),
+                    source: format!("{} < {}", date, last_modified).into(),
+                }
             });
         }
     }
@@ -778,7 +941,7 @@ fn convert_walkdir_result(
         Ok(entry) => Ok(Some(entry)),
         Err(walkdir_err) => match walkdir_err {
             HdfsErr::FileNotFound(_) => Ok(None),
-            _ => Err(match_error(HdfsErr::Generic(
+            _ => Err(from(HdfsErr::Generic(
                 "Fail to walk hdfs directory".to_owned(),
             ))),
         },
