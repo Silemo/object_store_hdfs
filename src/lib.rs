@@ -764,6 +764,7 @@ impl ObjectStore for HadoopFileSystem {
         let hdfs = self.hdfs.clone();
         print!("rename - Path from: {} \n", from.clone());
         print!("rename - Path to: {} \n", to.clone());
+        let dst_filename = format!("/{}", to.clone().filename().unwrap());
         // The following two variables will shadow the from and to &Path
         let from = from_ext_path_to_abs_fs_str(from);
         let to = from_ext_path_to_abs_fs_str(to);
@@ -771,6 +772,26 @@ impl ObjectStore for HadoopFileSystem {
         print!("rename - String to: {} \n", to.clone());
 
         maybe_spawn_blocking(move || {
+            // We need to make sure the source exist
+            if !hdfs.exist(&from) {
+                return Err(match_error(HdfsErr::FileNotFound(from)));
+
+            }
+            
+            // Delete destination if exists
+            if hdfs.exist(&to) {
+                hdfs.delete(&to, false).map_err(match_error)?;
+            } 
+            
+            // If destination folder does not exist, create destination folder
+            let dst_folder = to.strip_suffix(&dst_filename).unwrap();
+            if !hdfs.exist(&dst_folder) {
+                match hdfs.mkdir(&dst_folder) {
+                    Err(err) => return Err(match_error(err)),
+                    _ => (),
+                }
+            }
+
             hdfs.rename(&from, &to).map_err(match_error)?;
 
             Ok(())
@@ -785,10 +806,20 @@ impl ObjectStore for HadoopFileSystem {
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
         let hdfs = self.hdfs.clone();
         // The following two variables will shadow the from and to &Path
-        let from = String::from(from.clone());
-        let to = String::from(to.clone());
+        print!("copy_if_not_exits - Path from: {} \n", from.clone());
+        print!("copy_if_not_exits - Path to: {} \n", to.clone());
+        // The following two variables will shadow the from and to &Path
+        let from = from_ext_path_to_abs_fs_str(from);
+        let to = from_ext_path_to_abs_fs_str(to);
+        print!("copy_if_not_exits - String from: {} \n", from.clone());
+        print!("copy_if_not_exits - String to: {} \n", to.clone());
 
         maybe_spawn_blocking(move || {
+            // if origin file  does not exist
+            if !hdfs.exist(&from) {
+                return Err(match_error(HdfsErr::FileNotFound(from)));
+            }
+            // if destination file does exist
             if hdfs.exist(&to) {
                 return Err(match_error(HdfsErr::FileAlreadyExists(to)));
             }
@@ -1324,7 +1355,7 @@ mod tests_util {
         files.sort_unstable();
         assert_eq!(files, vec![emoji_file.clone(), dst.clone(), dst2.clone()]);
 
-        let dst3 = Path::from("bar.parquet");
+        let dst3 = Path::from("new/nested/bar.parquet");
         storage.rename(&dst, &dst3).await.unwrap();
         let mut files = flatten_list_stream(storage, None).await.unwrap();
         files.sort_unstable();
@@ -2000,7 +2031,7 @@ mod tests_util {
         storage.copy(&path1, &path2).await.unwrap();
         let new_contents = storage.get(&path2).await.unwrap().bytes().await.unwrap();
         assert_eq!(&new_contents, &contents1);
-
+        
         // rename() copies contents and deletes original
         storage.put(&path1, contents1.clone().into()).await.unwrap();
         storage.put(&path2, contents2.clone().into()).await.unwrap();
@@ -2067,6 +2098,7 @@ mod tests_util {
         // copy_if_not_exists() errors if source does not exist
         let result = storage.copy_if_not_exists(&path1, &path2).await;
         assert!(result.is_err());
+        print!("copy_rename_nonexistent_object : {:?} \n", result);
         assert!(matches!(result.unwrap_err(), ErrorObjectStore::NotFound { .. }));
 
         // Clean up
@@ -2155,14 +2187,27 @@ mod tests {
         print!("xxxxxxxxxxxxxxxxx LIST WITH DELIMITER xxxxxxxxxxxxxxxxxxxx \n");
         print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
         list_with_delimiter(&integration).await;
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxxxx RENAME AND COPY xxxxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        rename_and_copy(&integration).await;
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxx COPY IF NOT EXISTS xxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        copy_if_not_exists(&integration).await;
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxx COPY RENAME NON EXISTENT OBJECT xxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        copy_rename_nonexistent_object(&integration).await;
+        // NOT IMPLEMENTED MULTIPART_OPTS
         //print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
-        //print!("xxxxxxxxxxxxxxxxxxx RENAME AND COPY xxxxxxxxxxxxxxxxxxxxxx \n");
+        //print!("xxxxxxxxxxxxxxxxxxxxx STEAM GET xxxxxxxxxxxxxxxxxxxxxxxxxx \n");
         //print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
-        //rename_and_copy(&integration).await;
-        //copy_if_not_exists(&integration).await;
-        //copy_rename_nonexistent_object(&integration).await;
         //stream_get(&integration).await;
-        //put_opts(&integration, false).await;
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxxxxxxxx PUT OPTS xxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        print!("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \n");
+        put_opts(&integration, false).await;
     }
 
 
