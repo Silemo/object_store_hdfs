@@ -29,7 +29,7 @@ snafu = "0.7"
 url = "2.2"
 
 # object store and hdfs dependencies
-object_store = "0.10"
+object_store = "0.10.1"
 fs-hdfs3 = { version = "0.1.12", git = "https://github.com/Silemo/fs-hdfs"}
 
 [dev-dependencies]
