@@ -232,7 +232,7 @@ pub struct HadoopFileSystem {
 #[derive(Debug)]
 struct Config {
     root: Url,
-    hdfs: HfsFs,
+    hdfs: Arc<HdfsFs>,
 }
 
 impl Display for HadoopFileSystem {
@@ -256,6 +256,13 @@ impl HadoopFileSystem {
                 hdfs: get_hdfs_by_full_path(HOPS_FS_FULL).expect("Fail to get default HdfsFs"),
             }),
         }
+    }
+
+    /// Get root of the HDFS filesystem as a String
+    /// e.g. "hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/"
+    pub fn get_root_as_string(&self) -> String {
+        let root_string: String = self.config.root.clone().into();
+        root_string
     }
 
     /// Read a specified Range of Bytes from an HdfsFile
@@ -425,7 +432,7 @@ impl ObjectStore for HadoopFileSystem {
         }
 
         let hdfs = self.config.hdfs.clone();
-        let hdfs_root = String::from(self.config.root);
+        let hdfs_root = self.get_root_as_string();
         // The following variable will shadow location: &Path
         let location = from_ext_path_to_loc_fs_str(location);
         print!("get_opts - location: {} \n", location);
@@ -519,7 +526,7 @@ impl ObjectStore for HadoopFileSystem {
     /// Return the metadata for the specified location
     async fn head(&self, location: &Path) -> Result<ObjectMeta> {
         let hdfs = self.config.hdfs.clone();
-        let hdfs_root = String::from(self.config.root);
+        let hdfs_root = self.get_root_as_string();
         // The following variable will shadow location: &Path
         let location = from_ext_path_to_loc_fs_str(location);
 
@@ -567,7 +574,7 @@ impl ObjectStore for HadoopFileSystem {
     /// List all of the leaf files under the prefix path.
     /// It will recursively search leaf files whose depth is larger than 1
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
-        let default_path = Path::from(self.config.root);
+        let default_path = Path::from(self.get_root_as_string());
         let prefix = String::from(prefix.unwrap_or(&default_path).clone());
         let prefix = {
             if prefix.starts_with(HOPS_FS_PATH_PREFIX) {
@@ -583,7 +590,7 @@ impl ObjectStore for HadoopFileSystem {
         };
         print!("list - PREFIX: {} \n", prefix);
         let hdfs = self.config.hdfs.clone();
-        let hdfs_root = String::from(self.config.root);
+        let hdfs_root = self.get_root_as_string();
         print!("list - hdfs_root: {} \n", hdfs_root);
         let walkdir =
             HdfsWalkDir::new_with_hdfs(prefix, hdfs)
@@ -640,7 +647,7 @@ impl ObjectStore for HadoopFileSystem {
     /// List files and directories directly under the prefix path.
     /// It will not recursively search leaf files whose depth is larger than 1
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
-        let default_path = Path::from(self.config.root);
+        let default_path = Path::from(self.get_root_as_string());
         let prefix = String::from(prefix.unwrap_or(&default_path).clone());
         let prefix = {
             if prefix.starts_with(HOPS_FS_PATH_PREFIX) {
@@ -652,7 +659,7 @@ impl ObjectStore for HadoopFileSystem {
         };
         print!("list_with_delimiter - PREFIX: {} \n", prefix);
         let hdfs = self.config.hdfs.clone();
-        let hdfs_root = String::from(self.config.root);
+        let hdfs_root = self.get_root_as_string();
         print!("list_with_delimiter - hdfs_root: {} \n", hdfs_root);
         let walkdir =
             HdfsWalkDir::new_with_hdfs(prefix.clone(), hdfs)
