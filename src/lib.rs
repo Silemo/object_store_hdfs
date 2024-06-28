@@ -258,6 +258,16 @@ impl HadoopFileSystem {
         }
     }
 
+    /// Create new HadoopFileSystem specifying the path
+    pub fn new_from_full_path(path : &str) -> Self {
+        Self {
+            config : Arc::new(Config {
+                root: Url::parse(path).unwrap(),
+                hdfs: get_hdfs_by_full_path(path).expect("Fail to get specified HdfsFs"),
+            }),
+        }
+    }
+
     /// Get root of the HDFS filesystem as a String
     /// e.g. "hdfs://rpc.namenode.service.consul:8020/user/hdfs/tests/"
     pub fn get_root_as_string(&self) -> String {
