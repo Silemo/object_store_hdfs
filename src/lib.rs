@@ -172,7 +172,6 @@ impl From<Error> for ErrorObjectStore{
     }
 }
 
-
 impl From<HdfsErr> for Error {
     fn from(source: HdfsErr) -> Error {
         match source {
@@ -227,12 +226,18 @@ fn match_error(err: HdfsErr) -> ErrorObjectStore {
 
 #[derive(Debug)]
 pub struct HadoopFileSystem {
-    hdfs: Arc<HdfsFs>,
+    config: Arc<Config>,
+}
+
+#[derive(Debug)]
+struct Config {
+    root: Url,
+    hdfs: HfsFs,
 }
 
 impl Display for HadoopFileSystem {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HadoopFileSystem({})", self.get_path_root())
+        write!(f, "HadoopFileSystem({})", self.config.root)
     }
 }
 
@@ -246,24 +251,14 @@ impl HadoopFileSystem {
     /// Create new HadoopFileSystem by getting HdfsFs from default path
     pub fn new() -> Self {
         Self {
-            hdfs: get_hdfs_by_full_path(HOPS_FS_FULL).expect("Fail to get default HdfsFs"),
+            config : Arc::new(Config {
+                root: Url::parse(HOPS_FS_FULL).unwrap(),
+                hdfs: get_hdfs_by_full_path(HOPS_FS_FULL).expect("Fail to get default HdfsFs"),
+            }),
         }
     }
 
-    /// Create new HadoopFileSystem by getting HdfsFs from the full path, 
-    /// e.g. full_path == hdfs://localhost:8020/xxx/xxx
-    pub fn new_from_full_path(full_path: &str) -> Option<Self> {
-        get_hdfs_by_full_path(full_path)
-            .map(|hdfs| Some(Self { hdfs }))
-            .unwrap_or(None)
-    }
-
-    pub fn get_path_root(&self) -> String {
-        let root = self.hdfs.url().to_owned();
-        print!("get_path_root - ROOT : {} \n", root);
-        format!("{}{}", self.hdfs.url().to_owned(), HOPS_FS_LOC_PATH)
-    }
-
+    /// Read a specified Range of Bytes from an HdfsFile
     fn read_range(range: &Range<usize>, file: &HdfsFile) -> Result<Bytes> {
         // Set lenght to read
         print!("read_range - range.start: {} \n", range.start);
@@ -288,7 +283,6 @@ impl HadoopFileSystem {
                 actual: read,
             },
         );
-
 
         // Verify read
         //assert_eq!(
@@ -318,7 +312,7 @@ impl ObjectStore for HadoopFileSystem {
             return Err(ErrorObjectStore::NotImplemented);
         }
 
-        let hdfs = self.hdfs.clone();
+        let hdfs = self.config.hdfs.clone();
         // The following variable will shadow location: &Path
         let location = from_ext_path_to_loc_fs_str(location);
         print!("put_opts - LOCATION: {} \n", location);
@@ -430,8 +424,8 @@ impl ObjectStore for HadoopFileSystem {
             });
         }
 
-        let hdfs = self.hdfs.clone();
-        let hdfs_root = self.get_path_root();
+        let hdfs = self.config.hdfs.clone();
+        let hdfs_root = String::from(self.config.root);
         // The following variable will shadow location: &Path
         let location = from_ext_path_to_loc_fs_str(location);
         print!("get_opts - location: {} \n", location);
@@ -505,7 +499,7 @@ impl ObjectStore for HadoopFileSystem {
     ///
     /// See [`GetRange::Bounded`] for more details on how `range` gets interpreted
     async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
-        let hdfs = self.hdfs.clone();
+        let hdfs = self.config.hdfs.clone();
         // The following variable will shadow location: &Path
         let location = from_ext_path_to_abs_fs_str(location);
 
@@ -524,8 +518,8 @@ impl ObjectStore for HadoopFileSystem {
 
     /// Return the metadata for the specified location
     async fn head(&self, location: &Path) -> Result<ObjectMeta> {
-        let hdfs = self.hdfs.clone();
-        let hdfs_root = self.get_path_root();
+        let hdfs = self.config.hdfs.clone();
+        let hdfs_root = String::from(self.config.root);
         // The following variable will shadow location: &Path
         let location = from_ext_path_to_loc_fs_str(location);
 
@@ -550,7 +544,7 @@ impl ObjectStore for HadoopFileSystem {
 
     /// Delete the object at the specified location.
     async fn delete(&self, location: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
+        let hdfs = self.config.hdfs.clone();
         // The following variable will shadow location: &Path
         let location = String::from(location.clone());
         let location = if location.starts_with(HOPS_FS_PATH_PREFIX) {
@@ -573,7 +567,7 @@ impl ObjectStore for HadoopFileSystem {
     /// List all of the leaf files under the prefix path.
     /// It will recursively search leaf files whose depth is larger than 1
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
-        let default_path = Path::from(self.get_path_root());
+        let default_path = Path::from(self.config.root);
         let prefix = String::from(prefix.unwrap_or(&default_path).clone());
         let prefix = {
             if prefix.starts_with(HOPS_FS_PATH_PREFIX) {
@@ -588,8 +582,8 @@ impl ObjectStore for HadoopFileSystem {
             }
         };
         print!("list - PREFIX: {} \n", prefix);
-        let hdfs = self.hdfs.clone();
-        let hdfs_root = self.get_path_root();
+        let hdfs = self.config.hdfs.clone();
+        let hdfs_root = String::from(self.config.root);
         print!("list - hdfs_root: {} \n", hdfs_root);
         let walkdir =
             HdfsWalkDir::new_with_hdfs(prefix, hdfs)
@@ -646,7 +640,7 @@ impl ObjectStore for HadoopFileSystem {
     /// List files and directories directly under the prefix path.
     /// It will not recursively search leaf files whose depth is larger than 1
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
-        let default_path = Path::from(self.get_path_root());
+        let default_path = Path::from(self.config.root);
         let prefix = String::from(prefix.unwrap_or(&default_path).clone());
         let prefix = {
             if prefix.starts_with(HOPS_FS_PATH_PREFIX) {
@@ -657,8 +651,8 @@ impl ObjectStore for HadoopFileSystem {
             }
         };
         print!("list_with_delimiter - PREFIX: {} \n", prefix);
-        let hdfs = self.hdfs.clone();
-        let hdfs_root = self.get_path_root();
+        let hdfs = self.config.hdfs.clone();
+        let hdfs_root = String::from(self.config.root);
         print!("list_with_delimiter - hdfs_root: {} \n", hdfs_root);
         let walkdir =
             HdfsWalkDir::new_with_hdfs(prefix.clone(), hdfs)
@@ -731,7 +725,7 @@ impl ObjectStore for HadoopFileSystem {
     /// If there exists an object at the destination, it will be overwritten.
     /// To and From path are assumed to be relative paths!
     async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
+        let hdfs = self.config.hdfs.clone();
         // The following two variables will shadow from: &Path and to: &Path
         print!("copy - Path from: {} \n", from.clone());
         print!("copy - Path to: {} \n", to.clone());
@@ -761,7 +755,7 @@ impl ObjectStore for HadoopFileSystem {
 
     /// Move an object from one path to another in the same object store (HDFS)
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
+        let hdfs = self.config.hdfs.clone();
         print!("rename - Path from: {} \n", from.clone());
         print!("rename - Path to: {} \n", to.clone());
         let dst_filename = format!("/{}", to.clone().filename().unwrap());
@@ -804,7 +798,7 @@ impl ObjectStore for HadoopFileSystem {
     /// Will return an error if the destination already has an object. 
     /// This is done performing an atomic operation
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
-        let hdfs = self.hdfs.clone();
+        let hdfs = self.config.hdfs.clone();
         // The following two variables will shadow the from and to &Path
         print!("copy_if_not_exits - Path from: {} \n", from.clone());
         print!("copy_if_not_exits - Path to: {} \n", to.clone());
@@ -1087,7 +1081,6 @@ pub fn as_range(get_range: GetRange, actual: usize) -> Result<Range<usize>, Erro
         GetRange::Suffix(n) => Ok(actual.saturating_sub(n)..actual),
     }
 }
-
 
 #[cfg(test)]
 mod tests_util {
